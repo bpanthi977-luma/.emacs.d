@@ -1,1 +1,7 @@
+(load* "keymap.el")
+(load* "company.el")
+(load* "magit.el")
+(load* "theme.el")
+(load* "multiple-cursors.el")
+(load* "common-lisp.el")
 (load* "org/init.el")
