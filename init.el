@@ -13,9 +13,6 @@
 (tool-bar-mode -1)
 (scroll-bar-mode -1)
 (setf use-short-answers t)
-(setf ido-enable-flex-matching t)
-(ido-everywhere t)
-(ido-mode t)
 
 (setf epg-pinentry-mode 'loopback)
 

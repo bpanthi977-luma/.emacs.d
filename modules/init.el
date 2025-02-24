@@ -4,5 +4,6 @@
 (load* "magit.el")
 (load* "theme.el")
 (load* "multiple-cursors.el")
+(load* "ivy.el")
 (load* "common-lisp.el")
 (load* "org/init.el")
