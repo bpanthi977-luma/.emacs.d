@@ -2,3 +2,4 @@
 (load* "pdf-tools.el")
 (load* "presentation.el")
 (load* "org-roam.el")
+(load* "org-capture.el")

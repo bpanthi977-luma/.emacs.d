@@ -4,3 +4,5 @@
 /.DS_Store
 /projects
 /auto-save-list/
+/.org-id-locations
+/.mc-lists.el
