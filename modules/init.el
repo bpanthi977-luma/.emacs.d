@@ -1,4 +1,5 @@
 (load* "keymap.el")
+(load* "smartparens.el")
 (load* "company.el")
 (load* "magit.el")
 (load* "theme.el")

@@ -17,6 +17,8 @@
 (ido-everywhere t)
 (ido-mode t)
 
+(setf epg-pinentry-mode 'loopback)
+
 ;; Load modules
 (defun load* (path)
   (load (expand-file-name path (file-name-directory load-file-name))))
