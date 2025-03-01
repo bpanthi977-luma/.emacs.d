@@ -6,4 +6,6 @@
 (load* "multiple-cursors.el")
 (load* "ivy.el")
 (load* "common-lisp.el")
+(load* "lsp.el")
+(load* "python.el")
 (load* "org/init.el")
