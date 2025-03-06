@@ -8,5 +8,6 @@
   :ensure t
   :config
   (setq pdf-view-use-scaling t)
+  (setq pdf-view-continuous nil)
   :init
   (pdf-loader-install))
