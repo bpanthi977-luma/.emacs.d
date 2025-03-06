@@ -6,7 +6,7 @@
 ;; Basic config
 (setf init-dir (file-name-directory load-file-name))
 
-(setf custom-file "custom.el")
+(setf custom-file (expand-file-name "custom.el" init-dir))
 
 (global-set-key (kbd "C-z") #'undo)
 (setf backup-directory-alist `(("." . ,(concat init-dir "/savefiles/backups/"))))
