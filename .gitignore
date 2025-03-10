@@ -6,3 +6,5 @@
 /auto-save-list/
 /.org-id-locations
 /.mc-lists.el
+/bookmarks
+/.lsp-session-v1
