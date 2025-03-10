@@ -15,6 +15,7 @@
 (setf use-short-answers t)
 
 (setf epg-pinentry-mode 'loopback)
+(add-hook 'text-mode-hook #'visual-line-mode)
 
 ;; Load modules
 (defun load* (path)
