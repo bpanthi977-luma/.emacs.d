@@ -1,4 +1,5 @@
 (load* "org.el")
+(load* "org-mid-link.el")
 (load* "org-attach.el")
 (load* "pdf-tools.el")
 (load* "presentation.el")
