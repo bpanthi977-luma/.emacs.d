@@ -1,6 +1,7 @@
 (load* "keymap.el")
 (load* "smartparens.el")
 (load* "company.el")
+(load* "whitespace-cleanup")
 (load* "magit.el")
 (load* "theme.el")
 (load* "multiple-cursors.el")
