@@ -30,4 +30,4 @@ buffer's text scale."
 
   (add-hook 'text-scale-mode-hook #'bp/adjust-latex-previews-scale)
   (defadvice org-latex-preview (after bp/org-latex-preview--adjust-scale activate)
-    (bp/adjust-latex-previews-scale))
+    (bp/adjust-latex-previews-scale)))

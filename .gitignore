@@ -9,3 +9,6 @@
 /.mc-lists.el
 /bookmarks
 /.lsp-session-v1
+/eln-cache/
+/tree-sitter/
+/eshell/
