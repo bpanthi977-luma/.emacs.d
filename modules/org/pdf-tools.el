@@ -6,6 +6,9 @@
 
 (use-package pdf-tools
   :ensure t
+  :bind (:map pdf-view-mode-map
+	      ("C-s" . isearch-forward)
+	      ("C-r" . isearch-backward))
   :config
   (setq pdf-view-use-scaling t)
   (setq pdf-view-continuous nil)
