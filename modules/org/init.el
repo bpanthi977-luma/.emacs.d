@@ -7,3 +7,4 @@
 (load* "presentation.el")
 (load* "org-roam.el")
 (load* "org-capture.el")
+(load* "ox-html.el")
