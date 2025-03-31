@@ -8,6 +8,10 @@
   :bind (("C-s" . swiper-isearch)
 	 ("C-r" . swiper-isearch-backward)))
 
+;; Remembers history for M-x
+(use-package smex
+  :ensure t)
+
 (use-package counsel
   :ensure t
   :bind (("C-c s" . counsel-rg))
