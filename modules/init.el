@@ -8,5 +8,6 @@
 (load* "ivy.el")
 (load* "common-lisp.el")
 (load* "lsp.el")
+(load* "eldoc.el")
 (load* "python.el")
 (load* "org/init.el")
