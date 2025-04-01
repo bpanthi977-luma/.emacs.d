@@ -9,7 +9,7 @@
 (setf custom-file (expand-file-name "custom.el" init-dir))
 
 (global-set-key (kbd "C-z") #'undo)
-(setf backup-directory-alist `(("." . ,(concat init-dir "/savefiles/backups/"))))
+(setf backup-directory-alist `(("." . ,(concat init-dir "savefiles/backups/"))))
 (tool-bar-mode -1)
 (scroll-bar-mode -1)
 (setf use-short-answers t)

@@ -12,3 +12,9 @@
 /eln-cache/
 /tree-sitter/
 /eshell/
+/modules/other-packages/
+/forge-database.sqlite
+/abbrev_defs
+/nov-places
+/recentf
+/tramp
