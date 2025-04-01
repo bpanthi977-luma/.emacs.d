@@ -1,3 +1,4 @@
+(load* "org-export-stable-reference.el")
 (load* "org.el")
 (load* "ox-latex.el")
 (load* "org-mid-link.el")
