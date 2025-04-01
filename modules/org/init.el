@@ -2,6 +2,7 @@
 (load* "org.el")
 (load* "ox-latex.el")
 (load* "org-mid-link.el")
+(load* "org-nov-link.el")
 (load* "org-attach.el")
 (load* "org-mpv-notes.el")
 (load* "pdf-tools.el")
