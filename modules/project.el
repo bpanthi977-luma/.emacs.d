@@ -1,10 +1,7 @@
 (use-package project
   :bind (("C-x p C-s" . bp/project-save-all-buffers))
   :config
-  (defun bp/projectile-dir-p (dir)
-    (let ((root (locate-dominating-file dir ".projectile")))
-      (when root
-	(cons 'transient root))))
+  (cl-pushnew ".projectile" project-vc-extra-root-markers :test #'string-equal)
 
   (defun bp/project-save-all-buffers ()
     "Save all buffers that belong to the current project."
@@ -19,6 +16,4 @@
 		  (when (buffer-modified-p)
 		    (save-buffer)))))
 	    (message "All project buffers saved."))
-	(message "No project found or no buffers to save."))))
-
-  (add-to-list 'project-find-functions #'bp/projectile-dir-p))
+	(message "No project found or no buffers to save.")))))
