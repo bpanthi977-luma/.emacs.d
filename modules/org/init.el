@@ -9,4 +9,5 @@
 (load* "presentation.el")
 (load* "org-roam.el")
 (load* "org-capture.el")
+(load* "braindump.el")
 (load* "ox-html.el")
