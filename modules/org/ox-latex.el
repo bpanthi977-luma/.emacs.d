@@ -2,8 +2,7 @@
   :ensure nil
   :config
   (setq org-preview-latex-default-process 'dvisvgm)
-  (setq org-preview-latex-image-directory "/tmp/ltximg/")
-  (plist-put org-format-latex-options :scale 2)
+  (setq org-preview-latex-image-directory "~/.cache/org-ltximg/")
 
   (defun bp/adjust-latex-previews-scale ()
     "Adjust the size of latex preview fragments when changing the
