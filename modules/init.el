@@ -3,6 +3,7 @@
 (load* "company.el")
 (load* "whitespace-cleanup")
 (load* "magit.el")
+(load* "project.el")
 (load* "theme.el")
 (load* "multiple-cursors.el")
 (load* "ivy.el")
