@@ -1,3 +1,6 @@
+/.cache/
+/workspace/
+/eclipse.jdt.ls
 /savefiles/
 /custom.el
 /transient/
