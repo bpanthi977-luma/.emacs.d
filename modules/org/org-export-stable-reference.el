@@ -33,6 +33,14 @@
 	  (plist-put info :internal-references cache)
 	  reference-string))))
 
+(defun bp/org-export-escape-reference (str)
+  "Excape the `str' for use in link anchors in html, labels in latex."
+  (let ((str (substring-no-properties str)))
+    (cl-case org-export-current-backend
+      (html (url-hexify-string (substring-no-properties str)))
+      ((latex beamer) (replace-regexp-in-string "[^a-zA-Z0-9_-]" "-" str))
+      (t (string-replace " " "-" (substring-no-properties str))))))
+
 (defun bp/org-export-new-title-reference (datum cache)
   "Return new reference for DATUM that is unique in CACHE."
   (cl-macrolet ((inc-suffixf (place)
@@ -50,9 +58,7 @@
 				       0)))
 		       (setf ,place (format "%s--%s" s1 (cl-incf suffix)))))))
     (let* ((title (org-element-property :raw-value datum))
-	   (ref (if (eql org-export-current-backend 'html)
-		    (url-hexify-string (substring-no-properties title))
-		  (string-replace " " "-" (substring-no-properties title))))
+	   (ref (bp/org-export-escape-reference title))
 	   (parent (org-element-property :parent datum)))
       (while (--any (equal ref (car it))
 		    cache)
@@ -61,7 +67,7 @@
 	    ;; Append ancestor title.
 	    (setf title (concat (org-element-property :raw-value parent)
 				"--" title)
-		  ref (url-hexify-string (substring-no-properties title))
+		  ref (bp/org-export-escape-reference title)
 		  parent (org-element-property :parent parent))
 	  ;; No more ancestors: add and increment a number.
 	  (inc-suffixf ref)))
