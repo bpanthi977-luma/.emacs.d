@@ -13,6 +13,7 @@
 (setq auto-save-file-name-transforms `((".*" ,(concat temporary-file-directory "\\2") t)))
 (tool-bar-mode -1)
 (scroll-bar-mode -1)
+(setf ring-bell-function 'ignore)
 (setf use-short-answers t)
 
 (setf epg-pinentry-mode 'loopback)
