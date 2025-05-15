@@ -1,6 +1,10 @@
 (use-package ox-latex
   :ensure nil
   :config
+  (setf org-latex-src-block-backend 'listings)
+  (add-to-list 'org-latex-packages-alist '("" "listings"))
+  (add-to-list 'org-latex-packages-alist '("" "color"))
+
   (setq org-preview-latex-default-process 'dvisvgm)
   (setq org-preview-latex-image-directory "~/.cache/org-ltximg/")
 
