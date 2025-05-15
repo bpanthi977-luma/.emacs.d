@@ -23,5 +23,6 @@
 (defun load* (path)
   (load (expand-file-name path (file-name-directory load-file-name))))
 
-(load* "custom.el")
+(when (file-exists-p custom-file)
+  (load-file custom-file))
 (load* "modules/init.el")
