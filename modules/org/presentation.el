@@ -1,6 +1,6 @@
 ;; For exporting org files as a beamer presentation
 (use-package ox-beamer
-  :defer t
+  :after org
   :config
   (cl-pushnew '("beamer-show-heading" . "
 #+BEGIN_EXPORT latex
@@ -20,4 +20,5 @@
 
 ;; For presenting org files as presentation
 (use-package org-tree-slide
-  :ensure t)
+  :ensure t
+  :defer t)

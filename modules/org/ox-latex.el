@@ -1,5 +1,6 @@
 (use-package ox-latex
   :ensure nil
+  :after org
   :config
   (setf org-latex-src-block-backend 'listings)
   (add-to-list 'org-latex-packages-alist '("" "listings"))

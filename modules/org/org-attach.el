@@ -1,5 +1,6 @@
 (use-package org-attach
   :ensure nil
+  :after org
   :config
   (setq org-attach-auto-tag nil
 	org-attach-method "mv"

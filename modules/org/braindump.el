@@ -1,5 +1,6 @@
 (use-package ox-publish
   :ensure nil
+  :after org
   :config
   (setf org-export-allow-bind-keywords t)
   (defvar bp/org-publish-braindump-dir "~/Development/Web/Blog/blog/braindump/")
