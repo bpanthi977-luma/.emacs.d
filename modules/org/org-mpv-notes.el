@@ -1,8 +1,10 @@
 (use-package mpv
-  :ensure t)
+  :ensure t
+  :defer t)
 
 (use-package org-mpv-notes
   :ensure t
+  :defer t
   :hook (org-mode . org-mpv-notes-setup-link)
   :config
   (require 'smartrep)
