@@ -6,6 +6,7 @@
 (load* "project.el")
 (load* "theme.el")
 (load* "multiple-cursors.el")
+(load* "ace-window.el")
 (load* "ivy.el")
 (load* "lsp.el")
 (load* "langs/init.el")
