@@ -18,15 +18,15 @@
 
   (setf org-roam-mode nil)
   (setq org-roam-directory (file-truename "~/org")
-	org-roam-capture-templates '(("d" "default" "plain" "%?"
+	org-roam-capture-templates '(("d" "default" plain "%?"
 				      :target (file+head "${slug}.org"
 							 "#+title: ${title}\n#+date:%t\n")
 				      :unnarrowed t)
-				     ("p" "private" "plain" "%?"
+				     ("p" "private" plain "%?"
 				      :target (file+head "private/${slug}.org"
 							 "#+title: ${title}\n#+date:%t\n")
 				      :unnarrowed t)
-				     ("e" "encrypted private notes" "plain" "%?"
+				     ("e" "encrypted private notes" plain "%?"
 				      :target (file+head "private/${slug}.org.gpg"
 							 "#+title: ${title}\n#+date:%t\n")
 				      :unnarrowed t)))
