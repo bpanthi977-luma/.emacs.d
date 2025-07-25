@@ -6,6 +6,7 @@
 	      (("o l" . org-store-link)
 	       ("o L" . org-id-store-link)))
   :config
+  (setf org-directory (file-truename "~/org"))
   (setf org-image-actual-width nil)
   (setf org-startup-with-inline-images t)
   (setf org-babel-load-languages
