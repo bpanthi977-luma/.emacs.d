@@ -1,7 +1,8 @@
 (use-package sly
   :ensure t
   :config
-  (setf inferior-lisp-program "sbcl"))
+  (setf inferior-lisp-program "sbcl")
+  (setf org-babel-lisp-eval-fn #'sly-eval))
 
 (use-package sly-mrepl
   :ensure nil
