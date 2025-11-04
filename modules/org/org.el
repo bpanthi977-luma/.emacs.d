@@ -5,6 +5,8 @@
   :bind (:map bp/global-prefix-map
 	      (("o l" . org-store-link)
 	       ("o L" . org-id-store-link)))
+  :bind (:map org-mode-map
+	      (("M-," . org-mark-ring-goto)))
   :config
   (setf org-directory (file-truename "~/org"))
   (setf org-image-actual-width nil)
@@ -12,6 +14,7 @@
   (org-babel-do-load-languages
    'org-babel-load-languages
    '((awk . t)
+     (dot . t)
      (C . t)
      (R . t)
      (css . t)
