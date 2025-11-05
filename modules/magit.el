@@ -1,5 +1,7 @@
 (use-package magit
-  :ensure t)
+  :ensure t
+  :defer t)
 
 (use-package forge
-  :ensure t)
+  :ensure t
+  :defer t)
