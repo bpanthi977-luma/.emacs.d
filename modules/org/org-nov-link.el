@@ -12,7 +12,7 @@
 
 (defun bp/nov-find-buffer-visiting (file)
   (let ((truename (file-truename file)))
-    (find-if (lambda (buffer)
+    (cl-find-if (lambda (buffer)
 	       (with-current-buffer buffer
 		 (string-equal nov-file-name truename)))
 	     (buffer-list))))
