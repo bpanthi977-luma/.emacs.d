@@ -24,6 +24,7 @@ buffer's text scale."
 		 'org-latex-overlay)
 	     (bp/latex-preview--resize-fragment ov))))))
 
+  (require 'face-remap)
   (defun bp/latex-preview--resize-fragment (ov)
     (overlay-put
      ov 'display
