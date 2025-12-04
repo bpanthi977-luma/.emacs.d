@@ -1,3 +1,4 @@
+(load* "english.el")
 (load* "emacs-lisp.el")
 (load* "common-lisp.el")
 (load* "python.el")
