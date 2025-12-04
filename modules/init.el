@@ -13,3 +13,4 @@
 (load* "langs/init.el")
 (load* "eldoc.el")
 (load* "org/init.el")
+(load* "gptel.el")
