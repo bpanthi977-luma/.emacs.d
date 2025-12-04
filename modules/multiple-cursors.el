@@ -7,5 +7,6 @@
       "m"
     '(("p" . mc/mark-previous-like-this)
       ("n" . mc/mark-next-like-this)
+      ("l" . mc/edit-lines)
       ("0" . mc/insert-numbers)
       ("a" . mc/insert-letters))))
