@@ -34,3 +34,7 @@
      (shell . t)
      (sql . t)
      (sqlite . t))))
+
+(use-package orgit
+  :ensure t
+  :defer t)
