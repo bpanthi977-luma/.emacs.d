@@ -11,5 +11,5 @@
 (load* "org-capture.el")
 (load* "braindump.el")
 (load* "ox-html.el")
-(load* "org-datetree-custom-id.el")
-(load* "org-agenda.el")
+(load* "tasks.el")
+(load* "agenda.el")
