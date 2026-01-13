@@ -3,7 +3,7 @@
 	      ("o c" . org-capture))
   :init
   (setq org-capture-templates `(("t" "Todo" entry (file+datetree "private/tasks.org")
-				 "* TODO %?\n:PROPERTIES:\n:CREATED: %U\n:END:\n %i\n  %a")
+				 "* TODO %?\nSCHEDULED: %t\n:PROPERTIES:\n:CREATED: %U\n:END:\n %i\n  %a")
                                 ("l" "Log Time" entry (file+datetree "private/tasks.org")
                                  "* %? \n" :clock-in t :clock-keep t :clock-resume t)
                                 ("j" "Journal" entry (file+datetree "private/journal.org.gpg")
