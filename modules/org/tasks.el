@@ -83,12 +83,12 @@ Example output: :CUSTOM_ID: 20251101_kalman_filter"
 	     (pos (cdr (assoc selection candidates))))
 	pos))))
 
-(defun bp/org-tasks-link-parent ()
+(defun bp/org-tasks-link-parent (&optional parent-pos)
   "Link an node to another node in tasks file.
 PARENT property is updated in the child node and
 CHILD_TASKS property is update in the parent node."
   (interactive)
-  (let ((parent-pos (bp/org-datetree-find-entry "Parent entry: "))
+  (let ((parent-pos (or parent-pos (bp/org-datetree-find-entry "Parent entry: ")))
 	(child-custom-id (bp/org-datetree-custom-id))
 	(parent-custom-id))
     (if (not parent-pos)
@@ -127,7 +127,6 @@ heading, and its CHILD_TASKS."
   (unless (eq major-mode 'org-agenda-mode)
     (error "Not in an Org Agenda buffer"))
 
-  (print "mapping")
   (save-excursion
     (goto-char (point-min)) ;; Start from the beginning of the view
     (when
@@ -143,5 +142,38 @@ heading, and its CHILD_TASKS."
 	    (funcall func)))))))
 
 (defun bp/org-tasks-update-all-timetaken ()
+  "Update the TIMETAKEN property for all tasks listed in the agenda view."
   (interactive)
   (bp/org-agenda-map-entries #'bp/org-tasks-update-timetaken))
+
+(defun bp/org-tasks-start ()
+  "Ensures a log entry for the task under cursor in the agenda view under todays date. And starts the clock on that entry."
+  (interactive)
+  (let* ((marker (org-get-at-bol 'org-marker))
+	 (file (and marker (marker-buffer marker)))
+	 (task-title)
+	 (clockin-if-today (lambda ()
+			     (let ((task-date (bp/org-datetree-get-date-string))
+				   (today (format-time-string "%Y%m%d" (current-time))))
+			       (when (string-equal task-date today)
+				 (org-clock-in)
+				 t)))))
+    (unless (and marker file)
+      (error "No task under cursor."))
+
+    (with-current-buffer (marker-buffer marker)
+      (goto-char (marker-position marker))
+      (setf task-title (org-get-heading t t t t))
+      (or
+       (funcall clockin-if-today)
+       ;; Find a child tasks in today's date
+       (cl-some (lambda (child)
+		  (org-link-open-from-string child)
+		  (funcall clockin-if-today))
+		(org-entry-get-multivalued-property nil "CHILD_TASKS"))
+       ;; Create a new child tasks in today's date
+       (progn
+	 (org-datetree-file-entry-under (format "* %s" task-title) (calendar-current-date))
+	 (org-clock-in)
+	 (bp/org-tasks-link-parent (marker-position marker))
+	 t)))))
