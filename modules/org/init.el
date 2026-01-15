@@ -12,6 +12,6 @@
 (load* "org-capture.el")
 (load* "braindump.el")
 (load* "ox-html.el")
-(load* "tasks.el")
+(load* "org-tasks.el")
 (load* "agenda.el")
 (load* "org-alert.el")
