@@ -13,3 +13,4 @@
 (load* "ox-html.el")
 (load* "tasks.el")
 (load* "agenda.el")
+(load* "org-alert.el")
