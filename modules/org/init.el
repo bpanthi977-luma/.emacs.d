@@ -1,5 +1,6 @@
 (load* "org-export-stable-reference.el")
 (load* "org.el")
+(load* "yank-html-as-org.el")
 (load* "ox-latex.el")
 (load* "org-mid-link.el")
 (load* "org-nov-link.el")
