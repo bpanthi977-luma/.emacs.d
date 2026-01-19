@@ -11,6 +11,8 @@
   (setf org-directory (file-truename "~/org"))
   (setf org-image-actual-width nil)
   (setf org-startup-with-inline-images t)
+  (setf org-id-link-consider-parent-id t
+	org-id-link-to-org-use-id 'use-existing)
   (org-babel-do-load-languages
    'org-babel-load-languages
    '((awk . t)
