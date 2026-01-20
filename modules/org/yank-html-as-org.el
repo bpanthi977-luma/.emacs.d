@@ -10,7 +10,11 @@
   ;; Make sure `pandoc` is installed and on your PATH.
   (let* ((org-text (with-temp-buffer
 		     (if (zerop (call-process-shell-command bp/yank-html-as-org-command nil t nil))
-			 (buffer-string)
+			 (progn
+			   (goto-char (point-min))
+			   (while (re-search-forward "^[ \t]*:PROPERTIES:\n\\(?:.*\n\\)*?[ \t]*:END:[ \t]*\n?" nil t)
+			     (replace-match ""))
+			   (buffer-string))
 		       (error "Conversion command failed")))))
     (insert org-text)))
 
