@@ -10,7 +10,7 @@
 
 (global-set-key (kbd "C-z") #'undo)
 (setf backup-directory-alist `(("." . ,(concat init-dir "savefiles/backups/"))))
-(setq auto-save-file-name-transforms `((".*" ,(concat temporary-file-directory "\\2") t)))
+(setq auto-save-file-name-transforms `((".*" ,(concat init-dir "savefiles/autosave/" "\\2") t)))
 (tool-bar-mode -1)
 (scroll-bar-mode -1)
 (setf ring-bell-function 'ignore)
