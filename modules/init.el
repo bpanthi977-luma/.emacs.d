@@ -14,3 +14,4 @@
 (load* "eldoc.el")
 (load* "org/init.el")
 (load* "gptel.el")
+(load* "outline-mode.el")
