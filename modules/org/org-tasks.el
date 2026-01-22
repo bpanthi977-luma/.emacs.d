@@ -1,5 +1,7 @@
 ;; -*- eval: (outline-minor-mode); -*-
 
+(require 'org-datetree)
+
 ;; Custom code to manage my tasks.org file
 ;;; Custom variables
 (defcustom org-tasks-file (file-truename "~/org/private/tasks.org")
@@ -44,14 +46,16 @@ return the date formatted as YYYYMMDD."
 	  (replace-regexp-in-string "-" "" date-str)
 	nil))))
 
-(defun org-tasks--org-parent-headings ()
-  "List of all parent headings of the node"
-  (let ((headings))
-    (save-excursion
-      (while (org-up-heading-safe)
-	(push (org-get-heading t t t t) headings))
-      headings)))
-
+(defun org-tasks--random-string (length)
+  "Generate a random alphanumeric string of the given LENGTH."
+  (let* ((charset "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+	 (charset-len (length charset))
+	 (i 0)
+	 (str (make-string length 0)))
+    (while (< i length)
+      (setf (aref str i) (aref charset (random charset-len)))
+      (setf i (+ i 1)))
+    str))
 
 (defun org-tasks-custom-id ()
   "Add a CUSTOM_ID property to the current heading.
@@ -63,6 +67,7 @@ For other tree the ID is construction by concatenating slugfied version
 of all the headings.
 
 Example output: :CUSTOM_ID: 20251101_kalman_filter"
+  (interactive)
   (unless (derived-mode-p 'org-mode)
     (error "Not in an Org mode buffer. This function is for Org files."))
 
@@ -73,8 +78,10 @@ Example output: :CUSTOM_ID: 20251101_kalman_filter"
       ;; If ID does not exist, proceed to generate and set it
       (let* ((heading-slug (org-tasks--slugify (org-get-heading t t t t)))
 	     (parent-part (or (org-tasks--datetree-get-date-string)
-			      (string-join (mapcar #'org-tasks--slugify (org-tasks--org-parent-headings)) "__")))
-	     (custom-id (concat parent-part "__" heading-slug)))
+			      (concat (format-time-string "%Y%m%d" (current-time))
+				      "_"
+				      (org-tasks--random-string 4))))
+	     (custom-id (concat parent-part "_" heading-slug)))
 
 	;; Use org-set-property to insert the property
 	(org-set-property "CUSTOM_ID" custom-id)
@@ -90,12 +97,69 @@ Example output: :CUSTOM_ID: 20251101_kalman_filter"
     (set-marker marker pos)
     marker))
 
+
+(defun org-tasks--org-link-marker (org-link)
+  "Creates and returns marker to the file and position `ORG-LINK' points
+to.
+Works with file: and id: links only."
+  (pcase (with-temp-buffer
+	   (let ((org-inhibit-startup nil))
+	     (insert org-link)
+	     (org-mode)
+	     (goto-char (point-min))
+	     (org-element-link-parser)))
+    (`nil (user-error "No valid link in %S" s))
+    (link
+     (let* ((type (org-element-property :type link))
+	    (buffer))
+       (pcase type
+	 ("file"
+	  (let ((buffer (find-file-noselect (org-element-property :path link)))
+		(search-option (org-element-property :search-option link))
+		(position)
+		(marker (make-marker)))
+
+	    (with-current-buffer buffer
+	      (save-excursion
+		(when (org-string-nw-p search-option)
+		  (org-link-search search-option))
+		(setf position (point))))
+
+	    (set-marker marker position buffer)))
+
+	 ("id"
+	  (let* ((path (org-element-property :path link)) ;; for id links path has the whole string
+		 (search-option (and (string-match "::\\(.*\\)\\'" path)
+				     (match-string 1 path)))
+		 (id (if (not search-option)
+			 path
+		       (substring path 0 (match-beginning 0))))
+		 (marker))
+
+	    (setf marker (org-id-find id 'marker))
+	    (when search-option
+	      (with-current-buffer (marker-buffer marker)
+		(save-excursion
+		  (org-link-search search-option)
+		  (set-marker marker (point)))))
+	    marker))
+
+	  (_ (error "Unsupported link type: %s" type)))))))
+
+(defmacro org-tasks--with-org-link (org-link &rest body)
+  "Make current buffer and point be where ORG-LINK points, then eval BODY.
+Works with file: and id: links only."
+  (declare (indent 1) (debug (form body)))
+  `(let ((--marker (org-tasks--org-link-marker ,org-link)))
+     (with-current-buffer (marker-buffer --marker)
+       (save-excursion
+	 (goto-char (marker-position --marker))
+	 ,@body))))
+
 (defun org-tasks--marker-from-link ()
   (let ((link (pop org-stored-links)))
     (when link
-      (save-excursion
-	(org-link-open-from-string (car link))
-	(org-tasks-create-marker)))))
+      (org-tasks--org-link-marker link))))
 
 (defun org-tasks--link-string (target-file target-custom-id insert-file)
   (if (equal target-file insert-file)
@@ -159,11 +223,9 @@ heading, and its CHILD_TASKS."
   (interactive)
   (let ((sum (org-clock-sum-current-item))
 	(original-buffer (current-buffer)))
-    (save-window-excursion
-      (save-excursion
-	(dolist (child (org-entry-get-multivalued-property nil "CHILD_TASKS"))
-	  (org-link-open-from-string child)
-	  (setf sum (+ sum (org-clock-sum-current-item))))))
+    (dolist (child (org-entry-get-multivalued-property nil "CHILD_TASKS"))
+      (org-tasks--with-org-link child
+	(setf sum (+ sum (org-clock-sum-current-item)))))
     (org-entry-put nil "TIMETAKEN" (org-duration-from-minutes sum))
     sum))
 
@@ -178,9 +240,10 @@ heading, and its CHILD_TASKS."
 todays date. And starts the clock on that entry."
   (interactive)
   (let* ((parent-marker (or (org-get-at-bol 'org-marker)
-			    (org-store-link)))
+			    (org-tasks-create-marker)))
 	 (tasks-file (file-truename org-tasks-file))
-	 (parent-task-title)
+	 parent-task-title
+	 child-tasks
 	 (clockin-if-today (lambda ()
 			     (when (string-equal (file-truename (buffer-file-name)) tasks-file)
 			       (let ((task-date (org-tasks--datetree-get-date-string))
@@ -193,36 +256,21 @@ todays date. And starts the clock on that entry."
 
     (with-current-buffer (marker-buffer parent-marker)
       (goto-char (marker-position parent-marker))
-      (setf task-title (org-get-heading t t t t)))
+      (setf parent-task-title (org-get-heading t t t t)
+	    child-tasks (org-entry-get-multivalued-property nil "CHILD_TASKS")))
 
     (org-with-file-buffer tasks-file
       (or
-       (funcall clockin-if-today)
        ;; Find a child tasks in today's date
        (cl-some (lambda (child)
-		  (org-link-open-from-string child)
-		  (funcall clockin-if-today))
-		(org-entry-get-multivalued-property nil "CHILD_TASKS"))
+		  (org-tasks--with-org-link child
+		    (funcall clockin-if-today)))
+		child-tasks)
        ;; Create a new child tasks in today's date
        (progn
-	 (org-datetree-file-entry-under (format "* %s" task-title) (calendar-current-date))
+	 (org-datetree-file-entry-under (format "* %s" parent-task-title) (calendar-current-date))
 	 (org-clock-in)
 	 (org-tasks-link-parent parent-marker)
 	 t)))))
-
-;;; Global minor mode definition
-(defun org-tasks-store-link-advice (arg &optional interactive?)
-  (when (and interactive?
-	     (org-agenda-file-p (buffer-file-name)))
-    (org-tasks-custom-id)
-    (org-tasks-mark-parent)))
-
-(define-minor-mode org-tasks-mode
-  "Global minor mode to link tasks and keep track of TIMETAKEN."
-  :global t
-  (cond (org-tasks-mode
-	 (advice-add #'org-store-link :before #'org-tasks-store-link-advice))
-	(t
-	 (advice-remove #'org-store-link :before #'org-tasks-store-link-advice))))
 
 (provide 'org-tasks)
