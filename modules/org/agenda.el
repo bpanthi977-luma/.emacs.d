@@ -5,8 +5,43 @@
   :config
   (define-key org-agenda-mode-map (kbd bp/global-prefix) bp/global-prefix-map)
   (setf org-agenda-span 'day
-	org-agenda-files '("private/tasks.org" "private/tasks.org_archive" "private/plan.org")
-	org-agenda-skip-scheduled-if-deadline-is-shown t))
+	org-agenda-files '("private/tasks.org" "private/tasks.org_archive" "private/plan.org")))
+
+(use-package org-super-agenda
+  :ensure t
+  :config
+  (org-super-agenda-mode)
+  (setq org-agenda-custom-commands
+	'(("n" "Agenda and all TODOs" ((agenda "") (alltodo "")))
+	  ("a" "Daily with Sched vs Deadlines"
+	   ((agenda ""
+		    ((org-agenda-span 'day)
+		     (org-super-agenda-groups
+		      '((:name "Scheduled"
+			       :time-grid t
+			       :order 1)
+
+			(:name "Overdue"
+			       :scheduled past
+			       :order 2)
+
+			(:name "Deadlines"
+			       :deadline t
+			       :order 3)
+			(:name "Other"
+			       :anything t
+			       :order 90)))))))
+	  ("d" "Scheduled Today"
+	   agenda ""
+	   ((org-agenda-start-with-log-mode t)
+	    (org-agenda-log-mode-items '(closed))
+	    (org-super-agenda-keep-order t)
+	    (org-super-agenda-groups
+	     '((:name "Clocked today"
+		      :log close
+		      :time-grid t)
+	       (:discard (:anything t)))))))))
+
 (use-package org-tasks
   :ensure nil
   :config
