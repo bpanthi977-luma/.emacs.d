@@ -113,8 +113,10 @@ Works with file: and id: links only."
      (let* ((type (org-element-property :type link))
 	    (buffer))
        (pcase type
-	 ("file"
-	  (let ((buffer (find-file-noselect (org-element-property :path link)))
+	 ((or "file" "custom-id")
+	  (let ((buffer (if (equal type "custom-id")
+			    (current-buffer)
+			  (find-file-noselect (org-element-property :path link))))
 		(search-option (org-element-property :search-option link))
 		(position)
 		(marker (make-marker)))
@@ -157,9 +159,9 @@ Works with file: and id: links only."
 	 ,@body))))
 
 (defun org-tasks--marker-from-link ()
-  (let ((link (pop org-stored-links)))
-    (when link
-      (org-tasks--org-link-marker link))))
+  (let ((entry (pop org-stored-links)))
+    (when entry
+      (org-tasks--org-link-marker (concat "[[" (car entry) "]]")))))
 
 (defun org-tasks--link-string (target-file target-custom-id insert-file)
   (if (equal target-file insert-file)
