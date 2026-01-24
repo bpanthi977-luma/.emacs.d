@@ -258,23 +258,26 @@ todays date. And starts the clock on that entry."
     (unless (and parent-marker (marker-buffer parent-marker))
       (error "No task under cursor."))
 
-    (with-current-buffer (marker-buffer parent-marker)
-      (goto-char (marker-position parent-marker))
-      (setf parent-task-title (org-get-heading t t t t)
-	    child-tasks (org-entry-get-multivalued-property nil "CHILD_TASKS")))
+    (or
+     (with-current-buffer (marker-buffer parent-marker)
+       (goto-char (marker-position parent-marker))
+       (setf parent-task-title (org-get-heading t t t t)
+	     child-tasks (org-entry-get-multivalued-property nil "CHILD_TASKS"))
+       ;; Clock in if the parent node is itself okay as task node
+       (funcall clockin-if-today))
 
-    (org-with-file-buffer tasks-file
-      (or
+     (org-with-file-buffer tasks-file
        ;; Find a child tasks in today's date
-       (cl-some (lambda (child)
-		  (org-tasks--with-org-link child
-		    (funcall clockin-if-today)))
-		child-tasks)
-       ;; Create a new child tasks in today's date
-       (progn
-	 (org-datetree-file-entry-under (format "* %s" parent-task-title) (calendar-current-date))
-	 (org-clock-in)
-	 (org-tasks-link-parent parent-marker)
-	 t)))))
+       (or
+	(cl-some (lambda (child)
+		   (org-tasks--with-org-link child
+		     (funcall clockin-if-today)))
+		 child-tasks)
+	;; Create a new child tasks in today's date
+	(progn
+	  (org-datetree-file-entry-under (format "* %s" parent-task-title) (calendar-current-date))
+	  (org-clock-in)
+	  (org-tasks-link-parent parent-marker)
+	  t))))))
 
 (provide 'org-tasks)
