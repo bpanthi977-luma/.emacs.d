@@ -117,7 +117,9 @@ Works with file: and id: links only."
 	  (let ((buffer (if (equal type "custom-id")
 			    (current-buffer)
 			  (find-file-noselect (org-element-property :path link))))
-		(search-option (org-element-property :search-option link))
+		(search-option (if (equal type "custom-id")
+				   (org-element-property :raw-link link)
+				   (org-element-property :search-option link)))
 		(position)
 		(marker (make-marker)))
 
