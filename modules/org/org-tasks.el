@@ -72,7 +72,7 @@ Example output: :CUSTOM_ID: 20251101_kalman_filter"
     (error "Not in an Org mode buffer. This function is for Org files."))
 
   ;; Check for existing CUSTOM_ID property
-  (let ((existing-id (org-entry-get (point) "CUSTOM_ID" t)))
+  (let ((existing-id (org-entry-get (point) "CUSTOM_ID" nil)))
     (if existing-id
 	existing-id
       ;; If ID does not exist, proceed to generate and set it
