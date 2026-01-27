@@ -5,7 +5,8 @@
   :config
   (define-key org-agenda-mode-map (kbd bp/global-prefix) bp/global-prefix-map)
   (setf org-agenda-span 'day
-	org-agenda-files '("private/tasks.org" "private/tasks.org_archive" "private/plan.org")))
+	org-agenda-files (expand-file-name "private/agenda_files.txt" org-directory)
+	org-enforce-todo-dependencies t))
 
 (use-package org-super-agenda
   :ensure t
