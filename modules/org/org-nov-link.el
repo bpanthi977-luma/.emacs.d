@@ -42,4 +42,7 @@
 
 (use-package nov
   :ensure t
-  :hook (org-mode . org-nov-link-setup))
+  :after org
+  :hook (org-mode . org-nov-link-setup)
+  :config
+  (add-to-list 'auto-mode-alist '("\\.epub\\'" . nov-mode)))
