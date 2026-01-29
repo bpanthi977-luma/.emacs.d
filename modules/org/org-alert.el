@@ -5,7 +5,7 @@
 
   (setq org-alert-interval 60
 	org-alert-notify-cutoff 1
-	org-alert-notify-after-event-cutoff 1)
+	org-alert-notify-after-event-cutoff 0)
   (org-alert-enable))
 
 (use-package alert
