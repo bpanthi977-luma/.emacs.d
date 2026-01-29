@@ -25,6 +25,8 @@
 			  (concat "ID-" (org-element-property :ID datum)))
 			(when (org-element-property :raw-value datum)
 			  (bp/org-export-new-title-reference datum cache))
+			(when (org-element-type-p datum '(radio-target))
+			  (org-element-property :value datum))
 			(org-export-format-reference
 			 (org-export-new-reference cache))))
 	       (reference-string new))
