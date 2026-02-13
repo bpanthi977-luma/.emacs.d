@@ -200,6 +200,17 @@ CHILD_TASKS property is update in the parent node."
     (org-entry-put nil "PARENT" (org-tasks--link-string parent-buffer-name parent-custom-id child-buffer-name))
     t))
 
+(defun org-tasks-open-parent ()
+  "Open the parent link for the current task under cursor."
+  (interactive)
+  (let ((parent-link (org-entry-get
+		      (or (org-get-at-bol 'org-marker)
+			  nil)
+		      "PARENT")))
+    (unless parent-link
+      (error "No PARENT property."))
+    (org-link-open-from-string parent-link)))
+
 ;;; org-tasks-update-timetaken
 ;; Update TIMETAKEN
 (defun org-tasks--map-agenda-entries (func)

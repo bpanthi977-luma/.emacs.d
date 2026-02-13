@@ -56,4 +56,5 @@
 	     ("o i" . org-tasks-start)
 	     ("o M-l" . bp/org-tasks-link-with-id)
 	     ("o u" . org-tasks-update-timetaken)
-	     ("o U" . org-tasks-update-all-timetaken)))
+	     ("o U" . org-tasks-update-all-timetaken)
+	     ("o p" . org-tasks-open-parent)))
