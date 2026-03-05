@@ -14,7 +14,9 @@
 						     (expand-file-name "./bin/python" venv-dir)
 						     default-directory))))))
 
-(use-package dap-mode
-  :ensure t
-  :config
-  (require 'dap-codelldb))
+;; See https://github.com/svaante/dape on how to use different debug
+;; adapters.
+;; I recommend codelldb for C/C++ in MacOS
+
+(use-package dape
+  :ensure t)
