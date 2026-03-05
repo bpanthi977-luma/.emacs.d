@@ -92,9 +92,10 @@ Example output: :CUSTOM_ID: 20251101_kalman_filter"
 ;;; org-tasks-link-parent
 ;; Parent and Child tasks management
 (defun org-tasks-create-marker ()
-  (let* ((marker (make-marker))
-	 (pos (point)))
-    (set-marker marker pos)
+  (let ((marker (make-marker)))
+    (set-marker marker
+		(point)
+		(or (buffer-base-buffer) (current-buffer)))
     marker))
 
 
