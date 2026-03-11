@@ -19,9 +19,14 @@
   (let ((stripped (string-trim message-id "<" ">")))
     (insert "[[mid:" stripped "]]")))
 
+(defun org-mid-link-dnd-handler (url action)
+  (insert (format "[[%s][#]]" (org-link-escape url)))
+  'private)
+
 (defun org-mid-link-setup ()
   (org-link-set-parameters "mid" :follow #'org-mid-link-follow)
-  (org-link-set-parameters "imap-message" :follow #'org-imap-message-follow))
+  (org-link-set-parameters "imap-message" :follow #'org-imap-message-follow)
+  (add-to-list 'dnd-protocol-alist (cons "^imap-message://" 'org-mid-link-dnd-handler)))
 
 (with-eval-after-load 'org
   (org-mid-link-setup))
