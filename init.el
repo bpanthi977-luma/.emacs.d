@@ -15,6 +15,8 @@
 (scroll-bar-mode -1)
 (setf ring-bell-function 'ignore)
 (setf use-short-answers t)
+(setf dnd-indicate-insertion-point t)
+(setf mouse-drag-and-drop-region t)
 
 (setf epg-pinentry-mode 'loopback)
 (add-hook 'text-mode-hook #'visual-line-mode)
