@@ -12,7 +12,7 @@
     "Function to be used as member of `org-attach-id-to-path-function-list'
 Takes `id' of the node, and returns the attach directory.
 Returns NIL if fallback to other id to path functions is wanted."
-    (let* ((filename (buffer-file-name))
+    (let* ((filename (buffer-file-name (or (buffer-base-buffer) (current-buffer))))
 	   (basename (and filename (file-name-base filename))))
       basename))
 
