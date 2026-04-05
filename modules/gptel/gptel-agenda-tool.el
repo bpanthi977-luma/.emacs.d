@@ -39,4 +39,5 @@ captures the content, and returns it as a string."
    :category "org-agenda")
   "Gptel tool for fetching Org agenda logs.")
 
+(add-to-list 'gptel-tools gptel-agenda-log-tool)
 (provide 'gptel-agenda-tool)

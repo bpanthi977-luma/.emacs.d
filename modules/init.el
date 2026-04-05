@@ -13,5 +13,5 @@
 (load* "langs/init.el")
 (load* "eldoc.el")
 (load* "org/init.el")
-(load* "gptel.el")
+(load* "gptel/gptel.el")
 (load* "outline-mode.el")
