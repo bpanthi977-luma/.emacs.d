@@ -20,6 +20,9 @@
 
 (setf epg-pinentry-mode 'loopback)
 (add-hook 'text-mode-hook #'visual-line-mode)
+;; When visiting file, resolve the path to its truename
+;; Prevent issues with org-roam, org-pdftools and other stuff which are pathname dependent
+(setq find-file-visit-truename t)
 
 ;; Load modules
 (defun load* (path)
