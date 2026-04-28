@@ -3,7 +3,9 @@
 (defun bp/org-export-get-reference (datum info)
   "Like `org-export-get-reference', except uses heading titles instead of random numbers."
   (let ((cache (plist-get info :internal-references)))
-    (or (car (rassq datum cache))
+    (or (when (org-element-property :ID datum)
+	  (concat "ID-" (org-element-property :ID datum)))
+	(car (rassq datum cache))
 	(when (org-html-standalone-image-p datum info)
 	  (let ((figure-number (org-export-get-ordinal
 				(org-element-map datum 'link
