@@ -12,6 +12,7 @@
   (setf org-directory (file-truename "~/org"))
   (setf org-image-actual-width nil)
   (setf org-startup-with-inline-images t)
+  (setf org-indirect-buffer-display 'current-window)
 
   (setf org-id-link-consider-parent-id t
 	org-id-link-to-org-use-id 'use-existing)

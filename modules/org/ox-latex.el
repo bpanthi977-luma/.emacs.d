@@ -1,5 +1,6 @@
 (use-package ox-latex
   :ensure nil
+  :hook (org-mode . org-cdlatex-mode)
   :after org
   :config
   (setf org-latex-src-block-backend 'listings)

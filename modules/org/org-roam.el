@@ -17,6 +17,7 @@
 		       command))
 
   (setf org-roam-mode nil)
+  (setf org-roam-node-display-template "${title:50} ${tags:20}")
   (setq org-roam-directory (file-truename "~/org")
 	org-roam-capture-templates '(("d" "default" plain "%?"
 				      :target (file+head "${slug}.org"
