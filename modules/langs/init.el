@@ -3,3 +3,4 @@
 (load* "common-lisp.el")
 (load* "python.el")
 (load* "rust.el")
+(load* "typescript.el")

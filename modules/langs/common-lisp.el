@@ -1,3 +1,7 @@
+(add-hook 'lisp-mode-hook
+	  (lambda ()
+	    (setq indent-tabs-mode nil)))
+
 (use-package sly
   :ensure t
   :config

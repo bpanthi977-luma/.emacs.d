@@ -17,7 +17,10 @@
 (setf use-short-answers t)
 (setf dnd-indicate-insertion-point t)
 (setf mouse-drag-and-drop-region t)
-
+(setq save-interprogram-paste-before-kill t)
+(setq window-combination-resize t)
+(with-eval-after-load 'image-mode
+  (define-key image-mode-map (kbd "W") nil))
 (setf epg-pinentry-mode 'loopback)
 (add-hook 'text-mode-hook #'visual-line-mode)
 ;; When visiting file, resolve the path to its truename

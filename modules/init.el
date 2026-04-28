@@ -15,3 +15,4 @@
 (load* "org/init.el")
 (load* "gptel/gptel.el")
 (load* "outline-mode.el")
+(load* "eye-care.el")

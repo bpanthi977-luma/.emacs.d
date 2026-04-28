@@ -1,7 +1,8 @@
 (use-package ivy
   :ensure t
   :init
-  (ivy-mode t))
+  (ivy-mode t)
+  (keymap-unset ivy-minibuffer-map "S-SPC"))
 
 (use-package swiper
   :ensure t
