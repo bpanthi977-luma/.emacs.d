@@ -3,6 +3,13 @@
   :hook (org-mode . org-cdlatex-mode)
   :after org
   :config
+  ;; Autopair characters inside latex fragments
+  (org-defkey org-cdlatex-mode-map  (kbd "$") #'cdlatex-dollar)
+  (setf cdlatex-paired-parens "$[{(")
+  (org-defkey org-cdlatex-mode-map  (kbd "{") #'cdlatex-pbb)
+  (org-defkey org-cdlatex-mode-map  (kbd "(") #'cdlatex-pbb)
+  (org-defkey org-cdlatex-mode-map  (kbd "[") #'cdlatex-pbb)
+
   (setf org-latex-src-block-backend 'listings)
   (add-to-list 'org-latex-packages-alist '("" "listings"))
   (add-to-list 'org-latex-packages-alist '("" "color"))
