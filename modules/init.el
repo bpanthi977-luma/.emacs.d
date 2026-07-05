@@ -16,3 +16,4 @@
 (load* "gptel/gptel.el")
 (load* "outline-mode.el")
 (load* "eye-care.el")
+(load* "dired.el")
