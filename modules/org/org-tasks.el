@@ -14,7 +14,7 @@ datetree format.
 ;;; org-tasks-custom-id
 ;; Automatically create a CUSTOM_ID based on datetree or parent headings
 
-(defun org-tasks--slugify (str)
+(defun org-tasks--slugify (str max-size)
   "Convert STR to a URL-friendly, lowercase slug, replacing spaces and
 non-word characters with underscores."
   (let ((slug (downcase str)))
@@ -23,7 +23,11 @@ non-word characters with underscores."
     ;; Collapse multiple underscores into one
     (setq slug (replace-regexp-in-string "_+" "_" slug t t))
     ;; Remove leading/trailing underscores
-    (string-trim-left (string-trim-right slug "_") "_")))
+    (setq slug (string-trim-left (string-trim-right slug "_") "_"))
+    ;; Truncate
+    (if (> (length slug) max-size)
+	(substring slug 0 max-size)
+      slug)))
 
 (defun org-tasks--datetree-get-date-string ()
   "Search up the heading hierarchy for a YYYY-MM-DD date pattern and
@@ -76,7 +80,7 @@ Example output: :CUSTOM_ID: 20251101_kalman_filter"
     (if existing-id
 	existing-id
       ;; If ID does not exist, proceed to generate and set it
-      (let* ((heading-slug (org-tasks--slugify (org-get-heading t t t t)))
+      (let* ((heading-slug (org-tasks--slugify (org-get-heading t t t t) 10))
 	     (parent-part (or (org-tasks--datetree-get-date-string)
 			      (concat (format-time-string "%Y%m%d" (current-time))
 				      "_"
