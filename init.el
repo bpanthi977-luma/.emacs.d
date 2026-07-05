@@ -34,3 +34,4 @@
 (when (file-exists-p custom-file)
   (load-file custom-file))
 (load* "modules/init.el")
+(put 'set-goal-column 'disabled nil)
