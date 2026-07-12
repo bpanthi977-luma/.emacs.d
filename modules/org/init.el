@@ -1,4 +1,9 @@
+;; Packages
 (load* "org-export-stable-reference.el")
+(load* "org-archive-subtree-hierarchical.el")
+(load* "org-tasks.el")
+
+;; Configs
 (load* "org.el")
 (load* "yank-html-as-org.el")
 (load* "ox-latex.el")
@@ -12,6 +17,5 @@
 (load* "org-capture.el")
 (load* "braindump.el")
 (load* "ox-html.el")
-(load* "org-tasks.el")
 (load* "agenda.el")
 (load* "org-alert.el")

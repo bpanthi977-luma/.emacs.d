@@ -78,3 +78,9 @@
 	     ("o u" . org-tasks-update-timetaken)
 	     ("o U" . org-tasks-update-all-timetaken)
 	     ("o p" . org-tasks-open-parent)))
+
+(use-package org-archive-subtree-hierarchical
+  :ensure nil
+  :defer nil
+  :config
+  (setq org-archive-default-command 'org-archive-subtree-hierarchical))
