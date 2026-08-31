@@ -288,6 +288,23 @@ as one quoted argument is exactly the line a TUI mangles. The brief file is kept
 after launch — it is the only record of what a worker was actually told, and
 re-running that one line reproduces the launch by hand.
 
+**A model is a hole in the launch command, not another agent type.** Before
+`--model`, running a worker on a different model meant the human adding a whole
+type to `bp/agent-orchestration-launch-commands` (`claude-opus`, `claude-haiku`,
+…), which multiplies types by models and hides a per-spawn choice in a config
+file. So the template grew placeholders — `%b` for the brief, `%m` for the model
+flag — and a second alist says how each type *spells* that flag. Two knobs
+rather than one because the two facts are independent: how to start an agent, and
+what that agent calls the option. A type absent from the flag alist takes no
+model and a spawn naming one is refused, rather than being launched with a
+guessed flag: an unknown CLI rejecting `--model` exits on its usage message, and
+what the orchestrator would see is a worker that never reports — the failure
+this whole path is built to avoid. Model *names* are not validated for the same
+reason a list of them would be wrong within a release; the spawn line echoes the
+model instead, so a worker that dies at launch has a spelling to check. Old
+single-`%s` templates still render, since `format-spec` is only reached when the
+template actually uses the new placeholders.
+
 **Spawning restores the window configuration.** `+` showing its new terminal is
 right because the user asked for it; three background spawns rearranging the
 layout the user is reading is not. Same `save-window-excursion` the restore path

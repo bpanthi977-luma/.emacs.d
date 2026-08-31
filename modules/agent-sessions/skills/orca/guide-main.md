@@ -15,8 +15,8 @@ terminal, addressing a live one, and waiting.
 
 ```bash
 emacs-agent worktrees                     # who is working where
-emacs-agent spawn --type codex --worktree ~/dev/luma-core_5 \
-  --task "$(cat /tmp/brief.md)" --title "auth rewrite"
+emacs-agent spawn --type claude --worktree ~/dev/luma-core_5 \
+  --task "$(cat /tmp/brief.md)" --title "auth rewrite" --model opus
 emacs-agent wait --types done,blocked,question --timeout 90
 emacs-agent send --to 11588-42 --type answer --subject "Use approach B" --body "..."
 emacs-agent list                          # your workers and their live status
@@ -80,7 +80,8 @@ repo: ~/dev/luma-core/
 ## 2. Write the brief, then spawn
 
 ```bash
-emacs-agent spawn --type claude|codex --worktree DIR --task TEXT [--title SHORT]
+emacs-agent spawn --type claude|codex --worktree DIR --task TEXT \
+  [--title SHORT] [--model NAME]
 # --task-file FILE reads the brief from a file, which is easier for long ones
 ```
 
@@ -105,10 +106,38 @@ and to stop when it is finished. You do not need to repeat that.
 
 `--type` is any agent type configured in
 `bp/agent-orchestration-launch-commands` (`claude` and `codex` out of the box —
-adding one, or one with model flags, is a one-line defcustom edit the human can
-make).
+adding one is a one-line defcustom edit the human can make).
 
-## 3. Wait, and keep waiting
+## 3. Choose the model, when the task has an opinion about it
+
+`--model NAME` launches that worker on a specific model instead of the human's
+default. `NAME` is whatever the agent's own CLI accepts — for `claude`, an alias
+like `opus`, `sonnet`, `haiku` or `fable`, or a full model id; for `codex`, one
+of its model names. Nothing here validates the name (a list would be stale
+within a release), so spell it the way that CLI does.
+
+Match the model to the work, not to your own:
+
+- **a big or subtle task** — design, a tricky bug, code whose correctness you
+  cannot cheaply verify yourself — wants the strongest model. This is also the
+  case where a weaker model costs you *more* than it saves: you pay for the run
+  and then for reading a report you cannot trust.
+- **mechanical, verifiable, or wide work** — a rename across files, collecting
+  facts, running a check and reporting what it printed, one summary per file —
+  runs fine on a smaller, faster model, and that is what makes spawning ten of
+  them reasonable.
+- **omit it** when you have no reason to prefer one. The default is the human's
+  own configured model, which is the right thing to inherit by default.
+
+Say which model you gave each worker when you report, so the human can read a
+thin result as "wrong model for it" rather than as "the worker failed".
+
+A model name the CLI does not recognise is not caught here: the worker dies on
+its own error message and never reports. `spawn` echoes the model it launched
+with (`Spawned 11588-42 (claude, opus) in …`) — if a worker goes silent
+immediately, that line is where to check the spelling.
+
+## 4. Wait, and keep waiting
 
 ```bash
 emacs-agent wait --types done,blocked,question --timeout 90
@@ -131,7 +160,7 @@ Mail also reaches you when you are not waiting: if a worker reports while you ar
 idle at your prompt, Emacs types the message into your terminal and submits it,
 so you wake up with it as new input. Read it and continue the orchestration.
 
-## 4. Answer questions, then synthesize
+## 5. Answer questions, then synthesize
 
 A `question` from a worker is blocking — it is sitting in `emacs-agent ask` until
 you reply, so reply promptly:
