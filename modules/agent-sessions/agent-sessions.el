@@ -17,6 +17,10 @@
 (require 'magit)
 (require 'magit-section)
 (require 'project)
+;; Not autoloaded: `format-spec' renders the launch templates in
+;; `bp/agent-orchestration-launch-commands', and a spawn is the first thing
+;; that would notice it missing — long after this file loaded cleanly.
+(require 'format-spec)
 
 (defconst bp/agent-sessions--dir
   (file-name-directory (or load-file-name buffer-file-name
@@ -3275,17 +3279,39 @@ repo > worktree > session tree with foldable sections (TAB to fold/unfold)."
 ;; answers.
 
 (defcustom bp/agent-orchestration-launch-commands
-  '((claude . "claude \"$(cat %s)\"")
-    (codex  . "codex \"$(cat %s)\""))
+  '((claude . "claude %m \"$(cat %b)\"")
+    (codex  . "codex %m \"$(cat %b)\""))
   "Shell command per agent type that starts a worker on a task brief.
-%s is the path of the brief file `bp/agent-orchestration-spawn' wrote.
+Rendered with `format-spec':
+
+  %b  path of the brief file `bp/agent-orchestration-spawn' wrote, quoted
+  %m  the model flag for this spawn, or nothing when it named no model
+      (spelled by `bp/agent-orchestration-model-flags')
 
 The brief is read by the shell instead of being passed as a literal argument
 because it is a two-kilobyte multi-line prompt, and typing that into a terminal
 as one quoted argument is exactly the sort of line a TUI mangles.  `cat' keeps
 the typed line short whichever agent is launched, and passing the task at
 launch avoids the race that sending it afterwards would have: a TUI that is
-still starting silently drops input."
+still starting silently drops input.
+
+A template written before `%m' existed — one bare `%s' for the brief — still
+launches; it just has nowhere to put a model, so a spawn that names one against
+that type is refused rather than quietly run on the default model."
+  :type '(alist :key-type symbol :value-type string))
+
+(defcustom bp/agent-orchestration-model-flags
+  '((claude . "--model %s")
+    (codex  . "--model %s"))
+  "How each agent type spells \"run on this model\", with %s for the model name.
+This is what `%m' in `bp/agent-orchestration-launch-commands' expands to when a
+spawn names a model.  A type with no entry here takes no model, and a spawn
+naming one for it is refused: guessing a flag for a CLI we know nothing about
+would produce a worker that dies on its own usage message, which reaches the
+orchestrator as a worker that simply never reports.
+
+Model *names* are passed through unchecked — they are the agent CLI\='s
+vocabulary, not ours, and a list here would be wrong within a release."
   :type '(alist :key-type symbol :value-type string))
 
 (defcustom bp/agent-orchestration-push-when-idle t
@@ -3766,14 +3792,42 @@ guide', so what is installed is a stub that cannot go stale.  Idempotent."
     (unless (server-running-p) (server-start))
     (message "agent-sessions: %s" (string-join results "; "))))
 
-(defun bp/agent-orchestration-spawn (coordinator-id type worktree task &optional title)
+(defun bp/agent-orchestration--model-flag (agent model)
+  "Render MODEL as AGENT's model flag, nil when MODEL is empty.
+Returns the symbol `unsupported' when a model was asked for and AGENT has no
+spelling for one — the caller refuses the spawn rather than launching a worker
+on a model nobody chose."
+  (let ((model (string-trim (or model ""))))
+    (cond
+     ((string-empty-p model) nil)
+     ((alist-get agent bp/agent-orchestration-model-flags)
+      (format (alist-get agent bp/agent-orchestration-model-flags)
+              (shell-quote-argument model)))
+     (t 'unsupported))))
+
+(defun bp/agent-orchestration--launch-command (template brief model-flag)
+  "Render TEMPLATE into the shell line that launches a worker on BRIEF.
+MODEL-FLAG is the already-spelled flag or nil.  A template carrying neither
+`%b' nor `%m' is the pre-model single-`%s' form and is rendered as such, so an
+old customisation keeps working."
+  (let ((quoted (shell-quote-argument brief)))
+    (if (string-match-p "%[bm]" template)
+        (format-spec template `((?b . ,quoted) (?m . ,(or model-flag ""))))
+      (format template quoted))))
+
+(defun bp/agent-orchestration-spawn (coordinator-id type worktree task
+                                                    &optional title model)
   "Start a TYPE agent in WORKTREE on TASK, dispatched by COORDINATOR-ID.
+MODEL, when given, is the model name to launch that agent on, spelled into its
+command line by `bp/agent-orchestration-model-flags'.
 Returns a string to print.  WORKTREE must already exist: allocating checkouts
 is the orchestrator's job, not this package's, so that nothing here can leave a
 stray worktree or branch behind."
   (let* ((coordinator (bp/agent-sessions--session-for-id coordinator-id))
          (agent (and type (not (string-empty-p type)) (intern type)))
          (template (and agent (alist-get agent bp/agent-orchestration-launch-commands)))
+         (model (string-trim (or model "")))
+         (model-flag (and agent (bp/agent-orchestration--model-flag agent model)))
          (dir (and worktree (not (string-empty-p worktree))
                    (file-name-as-directory (expand-file-name worktree)))))
     (cond
@@ -3783,6 +3837,16 @@ stray worktree or branch behind."
       (format "Unknown agent type `%s'; known types: %s" type
               (mapconcat (lambda (cell) (symbol-name (car cell)))
                          bp/agent-orchestration-launch-commands ", ")))
+     ((eq model-flag 'unsupported)
+      (format "Agent type `%s' has no --model flag configured; types that take one: %s"
+              type
+              (if bp/agent-orchestration-model-flags
+                  (mapconcat (lambda (cell) (symbol-name (car cell)))
+                             bp/agent-orchestration-model-flags ", ")
+                "none")))
+     ((and model-flag (not (string-match-p "%m" template)))
+      (format "The launch command for `%s' has no `%%m' for a model flag: %s"
+              type template))
      ((or (null dir) (not (file-directory-p dir)))
       (format "No such worktree directory: %s (create it first, or pass one from `emacs-agent worktrees')"
               (or worktree "")))
@@ -3826,10 +3890,12 @@ stray worktree or branch behind."
               ;; whatever title the agent's TUI is about to advertise.
               (setq-local bp/agent-session-title-override label))
             (bp/agent-sessions--terminal-send
-             buf (format template (shell-quote-argument brief)))
+             buf (bp/agent-orchestration--launch-command template brief model-flag))
             (bp/agent-sessions--refresh-if-visible)
             (format "Spawned %s (%s) in %s\nTask: %s\nBrief: %s%s"
-                    worker-id type (abbreviate-file-name dir) label brief
+                    worker-id
+                    (if (string-empty-p model) type (format "%s, %s" type model))
+                    (abbreviate-file-name dir) label brief
                     (if trust-note (concat "\nNote: " trust-note) "")))))))))
 
 (defun bp/agent-orchestration-send (from-id to type subject body files report)
