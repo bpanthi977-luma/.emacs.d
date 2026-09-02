@@ -2752,13 +2752,28 @@ This is what the last render drew (`bp/agent-sessions--row-status'), never a
 fresh lookup: only the render path knows the displayed status."
   bp/agent-sessions--row-status)
 
+(defun bp/agent-sessions--hidden-file-row-p (row)
+  "Return non-nil when ROW belongs to a hidden shared-file section."
+  (let ((position (car row)))
+    (and (invisible-p position)
+         (save-excursion
+           (goto-char position)
+           (let ((section (magit-current-section)))
+             (and section
+                  (eq (oref section type) 'bp/agent-session-file)))))))
+
 (defun bp/agent-sessions--goto-row (direction predicate)
   "Move point to the next/previous row (DIRECTION is `next' or `prev').
-When PREDICATE is non-nil, only rows whose status satisfies it are considered."
+When PREDICATE is non-nil, only rows whose status satisfies it are considered.
+Hidden shared-file rows are excluded from filtered navigation; hidden session
+rows remain candidates."
   (let* ((cur (line-beginning-position))
          (positions (mapcar #'car
                             (if predicate
-                                (seq-filter (lambda (r) (funcall predicate (cdr r)))
+                                (seq-filter (lambda (r)
+                                              (and (funcall predicate (cdr r))
+                                                   (not (bp/agent-sessions--hidden-file-row-p
+                                                         r))))
                                             (bp/agent-sessions--rows))
                               (bp/agent-sessions--rows))))
          (target (pcase direction
@@ -2795,12 +2810,12 @@ trade places constantly; the stable order is the default for that reason."
   (memq status '(needs-attention error)))
 
 (defun bp/agent-sessions-next-attention ()
-  "Move to the next session row that needs attention."
+  "Move to the next session or visible file row that needs attention."
   (interactive)
   (bp/agent-sessions--goto-row 'next #'bp/agent-sessions--attention-p))
 
 (defun bp/agent-sessions-prev-attention ()
-  "Move to the previous session row that needs attention."
+  "Move to the previous session or visible file row that needs attention."
   (interactive)
   (bp/agent-sessions--goto-row 'prev #'bp/agent-sessions--attention-p))
 
