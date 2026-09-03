@@ -67,8 +67,9 @@ Populated lazily: an entry only exists once a hook event has fired for it.")
   "The types an inter-agent message may carry.
 Deliberately short: `done' is the one an orchestrator waits on, `blocked' and
 `question' are the two ways a worker stops short of it, `answer' closes a
-question, and `status' is everything else.  A larger vocabulary would have to
-earn itself by changing what some command *does*, not just what a row says.")
+question or replies to later mail delivered to a resting worker, and `status'
+is everything else.  A larger vocabulary would have to earn itself by changing
+what some command *does*, not just what a row says.")
 
 (defvar bp/agent-orchestration--mail (make-hash-table :test 'equal)
   "Recipient terminal id -> list of message plists, oldest first.
@@ -3662,6 +3663,8 @@ RULES
 - Failure is still a `done', with a subject that says so.  Never exit silently.
 - After `done', end your turn and sit at your prompt.  Do not poll for more
   work and do not start something unrelated; further work arrives as new input.
+  Reply to that later mail with the `Reply:' command it includes, which sends an
+  `answer' rather than a second `done'.
 - You may be sharing this worktree with other workers.  Touch only the files
   your task names, and leave git state alone — no `git add', `commit',
   `checkout', `rebase' or `stash' — unless the task says this worktree is

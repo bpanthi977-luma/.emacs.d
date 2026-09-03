@@ -38,7 +38,9 @@ Rules:
   turn would hang until a human noticed. `emacs-agent ask` is how you ask.
 - Failure is still a `done`, with a subject that says so. Never exit silently.
 - After `done`, end your turn and sit at your prompt. Do not poll for more work,
-  do not start something unrelated. More work arrives as new input.
+  do not start something unrelated. More work arrives as new input; reply with
+  the `Reply:` command included in that mail, which sends an `answer` rather
+  than a second `done`.
 - You may be sharing this worktree with other workers, so touch only the files
   your task names, and leave git state alone (`add`, `commit`, `checkout`,
   `rebase`, `stash`) unless your task says the worktree is yours. The index and

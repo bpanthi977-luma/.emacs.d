@@ -17,7 +17,7 @@ terminal, addressing a live one, and waiting.
 emacs-agent worktrees                     # who is working where
 emacs-agent spawn --type claude --worktree ~/dev/luma-core_5 \
   --task "$(cat /tmp/brief.md)" --title "auth rewrite" --model opus
-emacs-agent wait --types done,blocked,question --timeout 90
+emacs-agent wait --types done,blocked,question,answer --timeout 90
 emacs-agent send --to 11588-42 --type answer --subject "Use approach B" --body "..."
 emacs-agent list                          # your workers and their live status
 ```
@@ -140,11 +140,14 @@ immediately, that line is where to check the spelling.
 ## 4. Wait, and keep waiting
 
 ```bash
-emacs-agent wait --types done,blocked,question --timeout 90
+emacs-agent wait --types done,blocked,question,answer --timeout 90
 ```
 
 - Returns as soon as matching mail arrives, printing `messages: N` and the
-  messages. Each message names the worker that sent it.
+  messages. Each message names the worker that sent it. Keep `answer' in this
+  filter: a worker handling follow-up mail after its original `done' reports the
+  result as an `answer'. Omitting it leaves a completed result unread until the
+  wait times out.
 - On timeout it prints `messages: 0 (nothing after 90s; call wait again …)`.
   **That is a checkpoint, not a failure.** Real tasks run 15–60 minutes. Call
   `wait` again; use `emacs-agent list` if you want to see that a worker is still

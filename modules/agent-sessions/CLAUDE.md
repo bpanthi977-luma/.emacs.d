@@ -357,7 +357,11 @@ key and therefore remains unaddressable after death.
 Emacs's only thread, so a blocking wait inside Emacs would freeze the editor for
 its whole duration — which for this feature is minutes. `emacs-agent wait` loops
 over cheap `check` calls instead, and prints a keepalive to stderr every 15s so
-the calling agent's tool does not read a long wait as a hung command.
+the calling agent's tool does not read a long wait as a hung command.  The
+coordinator guide's actionable filter includes `answer': after a worker has sent
+its one lifecycle `done', a later message delivered to that resting conversation
+is answered directly.  Excluding that type makes `wait' ignore a completed
+follow-up until timeout even though the result is already in the mailbox.
 
 **Mail is pushed into an agent that is resting, and never into one mid-turn.**
 An orchestrator that is waiting collects its own mail; the case that needs help
