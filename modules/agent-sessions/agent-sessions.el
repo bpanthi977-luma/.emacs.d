@@ -85,11 +85,6 @@ other.  Filled from the database by `bp/agent-orchestration--hydrate' when a
 session's identity becomes known, and dropped for a terminal when it is killed
 \(`bp/agent-session--cleanup') — dropping the working copy, never the record.")
 
-(defvar bp/agent-orchestration--polls (make-hash-table :test 'equal)
-  "Terminal id -> `float-time' of its last inbox read.
-`emacs-agent wait' polls, so a recent read means that agent is coming back for
-its own mail; see `bp/agent-orchestration--polling-p'.")
-
 (defvar bp/agent-orchestration--counter 0
   "Source of message and brief ids within this Emacs.")
 
@@ -241,7 +236,6 @@ Populates the cache on first use; `bp/agent-sessions-refresh' clears it."
     (remhash bp/agent-session-id bp/agent-session-id->buffer)
     (remhash bp/agent-session-id bp/agent-sessions)
     (remhash bp/agent-session-id bp/agent-orchestration--mail)
-    (remhash bp/agent-session-id bp/agent-orchestration--polls)
     (bp/agent-sessions--refresh-if-visible)))
 
 (defun bp/agent-sessions--vterm-advice (orig-fun pop-to-buf-fun &optional arg)
@@ -3403,16 +3397,8 @@ vocabulary, not ours, and a list here would be wrong within a release."
 An orchestrator that is waiting collects its own mail through `emacs-agent
 wait', so this covers the other case: mail arriving for an agent that has
 finished its turn and would otherwise sit idle until the user prompted it.
-Delivery is skipped while the recipient is polling, so a waiting orchestrator
-cannot be handed the same message twice — see `bp/agent-orchestration--polling-p'."
+Mail is never pushed while the recipient has a running turn."
   :type 'boolean)
-
-(defcustom bp/agent-orchestration-poll-grace 30
-  "Seconds after an inbox read during which mail is not pushed to a terminal.
-`emacs-agent wait' polls every couple of seconds, so anything shorter than its
-interval would race it; anything much longer would leave a coordinator that has
-stopped waiting waiting again."
-  :type 'integer)
 
 (defconst bp/agent-orchestration--submit-delay 0.5
   "Seconds between pasting a message into a TUI and pressing Enter.
@@ -3540,13 +3526,6 @@ message is gone, but the identity it was filed under is not."
     (`("session" ,session-id) session-id)
     (_ (bp/agent-orchestration--sender-terminal msg))))
 
-(defun bp/agent-orchestration--record-poll (id)
-  (puthash id (float-time) bp/agent-orchestration--polls))
-
-(defun bp/agent-orchestration--polling-p (id)
-  (let ((last (gethash id bp/agent-orchestration--polls)))
-    (and last (< (- (float-time) last) bp/agent-orchestration-poll-grace))))
-
 ;;;; Message rendering
 
 (defun bp/agent-orchestration--describe-sender (id)
@@ -3646,19 +3625,12 @@ Consuming before pasting is what keeps this idempotent across both callers."
       (when (and session (buffer-live-p buf)
                  (bp/agent-orchestration--receptive-p session)
                  (bp/agent-orchestration--pending id))
-        (if (bp/agent-orchestration--polling-p id)
-            ;; The recipient read its inbox a moment ago, so it is mid-wait and
-            ;; will collect this itself.  Look again once that stops being
-            ;; true: without the retry, mail that lands just after a wait gives
-            ;; up would sit unread until the next hook event happened along.
-            (run-at-time (1+ bp/agent-orchestration-poll-grace) nil
-                         #'bp/agent-orchestration-deliver id)
-          (let ((pending (bp/agent-orchestration--pending id)))
-            (bp/agent-orchestration--consume pending)
-            (bp/agent-orchestration--paste
-             buf (concat "Orchestration mail arrived while you were idle.\n\n"
-                         (bp/agent-orchestration--format-messages pending)))
-            (bp/agent-sessions--refresh-if-visible)))))))
+        (let ((pending (bp/agent-orchestration--pending id)))
+          (bp/agent-orchestration--consume pending)
+          (bp/agent-orchestration--paste
+           buf (concat "Orchestration mail arrived while you were idle.\n\n"
+                       (bp/agent-orchestration--format-messages pending)))
+          (bp/agent-sessions--refresh-if-visible))))))
 
 ;;;; The worker brief
 
@@ -4128,11 +4100,9 @@ Return the new terminal id."
 
 (defun bp/agent-orchestration-check (id types consume)
   "Return ID's unread mail, marking it read unless CONSUME is nil.
-TYPES is a comma-separated filter or nil.  Recording the read is what tells
-`bp/agent-orchestration-deliver' that this agent is collecting its own mail."
+TYPES is a comma-separated filter or nil."
   (if (null (bp/agent-sessions--session-for-id id))
       (format "No Emacs terminal registered for session id %s" id)
-    (bp/agent-orchestration--record-poll id)
     (bp/agent-orchestration--hydrate id)
     (let* ((filter (and types (not (string-empty-p types))
                         (split-string types "," t "[ \t]+")))
@@ -4155,7 +4125,6 @@ consumed in the same snapshot so progress cannot become stale or race a later
 terminal message."
   (if (null (bp/agent-sessions--session-for-id id))
       (format "wait: error\nNo Emacs terminal registered for session id %s" id)
-    (bp/agent-orchestration--record-poll id)
     (bp/agent-orchestration--hydrate id)
     (let* ((filter (and types (not (string-empty-p types))
                         (split-string types "," t "[ \t]+")))
