@@ -3871,6 +3871,18 @@ old customisation keeps working."
         (format-spec template `((?b . ,quoted) (?m . ,(or model-flag ""))))
       (format template quoted))))
 
+(defun bp/agent-orchestration--mark-worker (buf coordinator-id coordinator title)
+  "Attach BUF to COORDINATOR-ID as a worker and give it TITLE."
+  (let ((parent-sid (plist-get coordinator :agent-session-id)))
+    (with-current-buffer buf
+      (when parent-sid
+        (setq-local bp/agent-session--branched-from
+                    (cons parent-sid
+                          (bp/agent-sessions--session-short-label coordinator))))
+      (setq-local bp/agent-orchestration-coordinator coordinator-id)
+      (when (and title (not (string-empty-p title)))
+        (setq-local bp/agent-session-title-override title)))))
+
 (defun bp/agent-orchestration-spawn (coordinator-id type worktree task
                                                     &optional title model)
   "Start a TYPE agent in WORKTREE on TASK, dispatched by COORDINATOR-ID.
@@ -3928,23 +3940,9 @@ stray worktree or branch behind."
                        dir (plist-get (bp/agent-session--repo-info dir) :worktree))))))
         (if (not (buffer-live-p buf))
             "Could not create a terminal for the worker"
-          (let ((worker-id (buffer-local-value 'bp/agent-session-id buf))
-                (parent-sid (plist-get coordinator :agent-session-id)))
-            (with-current-buffer buf
-              ;; Parentage rides the same slot a `b'-branch uses, which is what
-              ;; makes the dashboard nest this row under its coordinator's; the
-              ;; worker's first hook event picks it up from the buffer (see
-              ;; `bp/agent-hook-notify').  It needs the coordinator's *agent*
-              ;; session id, so a coordinator that has not fired a hook yet
-              ;; simply gets a flat row — the spawn still works.
-              (when parent-sid
-                (setq-local bp/agent-session--branched-from
-                            (cons parent-sid
-                                  (bp/agent-sessions--session-short-label coordinator))))
-              (setq-local bp/agent-orchestration-coordinator coordinator-id)
-              ;; The task is what the human wants to read on the row, not
-              ;; whatever title the agent's TUI is about to advertise.
-              (setq-local bp/agent-session-title-override label))
+          (let ((worker-id (buffer-local-value 'bp/agent-session-id buf)))
+            (bp/agent-orchestration--mark-worker
+             buf coordinator-id coordinator label)
             (bp/agent-sessions--terminal-send
              buf (bp/agent-orchestration--launch-command template brief model-flag))
             (bp/agent-sessions--refresh-if-visible)
@@ -3982,25 +3980,29 @@ terminal before it is considered for revival."
           (list current (bp/agent-sessions--session-for-id current) nil)
         (list id logged t)))))
 
-(defun bp/agent-orchestration--revive-recipient (recipient message)
-  "Resume RECIPIENT and submit MESSAGE as its first prompt.
+(defun bp/agent-orchestration--revive-recipient
+    (coordinator-id coordinator recipient message)
+  "Resume RECIPIENT as COORDINATOR-ID's child and submit MESSAGE.
 Return the new terminal id."
   (let* ((prompt (concat "Orchestration mail revived this session.\n\n"
                          (bp/agent-orchestration--format-message message)))
          (buf (save-window-excursion
-                (bp/agent-session-start
-                 (plist-get recipient :worktree-path)
-                 (plist-get recipient :agent-type)
-                 (plist-get recipient :agent-session-id)
-                 prompt)))
+                (let ((bp/agent-sessions--extra-terminal-env
+                       (list "EMACS_AGENT_ROLE=worker"
+                             (format "EMACS_AGENT_COORDINATOR=%s"
+                                     coordinator-id))))
+                  (bp/agent-session-start
+                   (plist-get recipient :worktree-path)
+                   (plist-get recipient :agent-type)
+                   (plist-get recipient :agent-session-id)
+                   prompt))))
          (id (and (buffer-live-p buf)
                   (buffer-local-value 'bp/agent-session-id buf)))
          (title (plist-get recipient :title)))
     (unless id
       (error "Could not create a terminal for the revived session"))
-    (when (and title (not (string-empty-p title)))
-      (with-current-buffer buf
-        (setq-local bp/agent-session-title-override title)))
+    (bp/agent-orchestration--mark-worker
+     buf coordinator-id coordinator title)
     id))
 
 (defun bp/agent-orchestration--store-message (id message)
@@ -4044,7 +4046,8 @@ Return the new terminal id."
                 (progn
                   (when revive-p
                     (setq current-id
-                          (bp/agent-orchestration--revive-recipient recipient msg)))
+                          (bp/agent-orchestration--revive-recipient
+                           from-id sender recipient msg)))
                   (bp/agent-orchestration--store-message current-id msg)
                   (if revive-p
                       (bp/agent-orchestration--consume (list msg))
