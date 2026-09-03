@@ -19,6 +19,7 @@ emacs-agent spawn --type claude --worktree ~/dev/luma-core_5 \
   --task "$(cat /tmp/brief.md)" --title "auth rewrite" --model opus
 emacs-agent wait --types done,blocked,question,answer --timeout 90
 emacs-agent send --to 11588-42 --type answer --subject "Use approach B" --body "..."
+emacs-agent send-and-wait --to 11588-42 --subject "Follow-up" --body "..."
 emacs-agent list                          # your workers and their live status
 ```
 
@@ -165,6 +166,21 @@ idle at your prompt, Emacs types the message into your terminal and submits it,
 so you wake up with it as new input. Read it and continue the orchestration.
 
 ## 5. Answer questions, then synthesize
+
+For a conversational request whose result you need in the current turn, send
+it and wait for the reply in one command:
+
+```bash
+emacs-agent send-and-wait --to <address> --subject "<topic>" --body "<question>" \
+  --timeout 90
+```
+
+It defaults to an outgoing `question` and stops on an incoming `answer`.
+`--type` overrides the outgoing message type; `--types` overrides the
+comma-separated message types that stop the wait. Status messages are still
+printed while polling continues. Delivery completes before polling starts, so
+the same durable-address routing and revival behavior as `send` applies. If the
+current response does not need the reply, use `send` alone and yield normally.
 
 A `question` from a worker is blocking — it is sitting in `emacs-agent ask` until
 you reply, so reply promptly:

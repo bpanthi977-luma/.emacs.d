@@ -245,10 +245,10 @@ per-refresh work off the git path.
 
 ## Orchestration — an agent spawning and talking to other agents
 
-`bin/emacs-agent` (spawn/send/done/ask/check/wait/list/worktrees) lets an agent
-start another agent in another worktree and block until it reports. It reaches
-Emacs the way `emacs-share-file` does, and returns its failures as the printed
-value for the same reason.
+`bin/emacs-agent` lets an agent start another agent in another worktree and
+block until it reports. Its verbs are spawn, send, send-and-wait, done, ask,
+check, wait, list, and worktrees. It reaches Emacs the way `emacs-share-file`
+does, and returns its failures as the printed value for the same reason.
 
 **Emacs owns only what an agent cannot do for itself.** There are no task rows,
 no dependency graph and no scheduler, and adding them is the obvious wrong turn.
@@ -370,6 +370,14 @@ classifies and consumes the batch in one call, avoiding the race where a
 terminal message arrives between a peek for matching types and a separate
 consume-all call.  The actionable filter includes `answer' because follow-up
 work after a worker's lifecycle `done' replies with that type.
+
+`send-and-wait' composes the existing shell-side send and poll operations.  It
+defaults to the common conversational pair — outgoing `question', incoming
+`answer' — while preserving their independent type overrides.  Because the
+send must succeed before polling begins, address routing, revival, persistence,
+timeout behavior and incremental status output remain owned by their existing
+chokepoints.  `ask' uses the same composition for its coordinator-directed
+question flow.
 
 **Mail is pushed into an agent that is resting, and never into one mid-turn.**
 An orchestrator that is waiting collects its own mail; the case that needs help

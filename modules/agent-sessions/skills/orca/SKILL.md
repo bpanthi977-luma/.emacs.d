@@ -48,6 +48,11 @@ You may continue unrelated work in the current turn, but worker mail will not
 interrupt it. A worker that sent a question remains blocked until you collect
 the message with `wait` or finish the turn and let Emacs deliver it.
 
+For a conversational request whose answer is needed immediately, use
+`emacs-agent send-and-wait` instead of separate `send` and `wait` calls. It
+defaults to sending a `question` and waiting for an `answer`; use plain `send`
+and yield when the current response does not depend on the reply.
+
 `send --to` accepts a current terminal id, a durable agent session id, or a full
 `agent-session:AGENT::SESSION-ID::WORKTREE` link. Dead terminal addresses and
 durable addresses restore resumable conversations in a new worker terminal;
