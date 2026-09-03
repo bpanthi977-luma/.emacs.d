@@ -3546,11 +3546,12 @@ conversation is live again, named but not addressable when it is not."
   (let* ((live (bp/agent-orchestration--sender-terminal msg))
          (reply-to (bp/agent-orchestration--sender-address msg))
          (label (or (plist-get msg :from-label) (plist-get msg :from) "unknown")))
-    (concat (format "--- [%s] from %s%s\n" (plist-get msg :type)
+    (concat (format "--- $orca (/orca) message from %s%s [%s]\n"
                     (or live label)
                     (if live
                         (bp/agent-orchestration--describe-sender live)
-                      (format " (%s — that terminal is gone)" label)))
+                      (format " (%s — that terminal is gone)" label))
+                    (plist-get msg :type))
             (format "Subject: %s\n" (plist-get msg :subject))
             (let ((body (plist-get msg :body)))
               (if (and body (not (string-empty-p body))) (concat body "\n") ""))
@@ -3628,7 +3629,7 @@ Consuming before pasting is what keeps this idempotent across both callers."
         (let ((pending (bp/agent-orchestration--pending id)))
           (bp/agent-orchestration--consume pending)
           (bp/agent-orchestration--paste
-           buf (concat "Orchestration mail arrived while you were idle.\n\n"
+           buf (concat "$orca (/orca) agent mail arrived while you were idle.\n\n"
                        (bp/agent-orchestration--format-messages pending)))
           (bp/agent-sessions--refresh-if-visible))))))
 
@@ -4019,7 +4020,7 @@ ADDRESS may be a terminal id, raw agent session id, or `agent-session:' link."
     (coordinator-id coordinator recipient message)
   "Resume RECIPIENT as COORDINATOR-ID's child and submit MESSAGE.
 Return the new terminal id."
-  (let* ((prompt (concat "Orchestration mail revived this session.\n\n"
+  (let* ((prompt (concat "$orca (/orca) agent mail revived this session.\n\n"
                          (bp/agent-orchestration--format-message message)))
          (buf (save-window-excursion
                 (let ((bp/agent-sessions--extra-terminal-env
