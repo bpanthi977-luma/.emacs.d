@@ -3,6 +3,7 @@
 #
 #   emacs-agent spawn --type claude|codex --worktree DIR --task TEXT [--title T] [--model M]
 #   emacs-agent send --to ADDRESS --type TYPE --subject S [--body B] [--files csv] [--report P]
+#   emacs-agent send-and-wait --to ADDRESS --subject S [--body B] [--type TYPE] [--types csv]
 #   emacs-agent done --summary S [--files csv] [--report P] [--subject S] [--to ADDRESS]
 #   emacs-agent ask --question Q [--timeout SECONDS] [--to ADDRESS]
 #   emacs-agent check [--types csv] [--peek]
@@ -26,7 +27,7 @@ set -u
 selfdir=$(cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || selfdir=""
 
 usage() {
-  sed -n '3,17p' "$0" | sed -e 's/^# \{0,1\}//'
+  sed -n '3,18p' "$0" | sed -e 's/^# \{0,1\}//'
 }
 
 die() { echo "emacs-agent: $1" >&2; exit 1; }
@@ -140,6 +141,11 @@ poll() { # poll STOP-TYPES TIMEOUT INTERVAL
   done
 }
 
+do_send_and_wait() { # TO TYPE SUBJECT BODY FILES REPORT STOP-TYPES TIMEOUT INTERVAL
+  do_send "$1" "$2" "$3" "$4" "$5" "$6" || return 1
+  poll "$7" "$8" "$9"
+}
+
 case "$verb" in
   guide)
     file=guide-worker.md
@@ -165,6 +171,16 @@ case "$verb" in
     do_send "$to" "$type_" "$subject" "$body" "$files" "$report_path"
     ;;
 
+  send-and-wait)
+    need_session
+    [ -n "$to" ] || die "send-and-wait needs --to ADDRESS"
+    [ -n "$subject" ] || die "send-and-wait needs --subject"
+    [ -n "$type_" ] || type_=question
+    [ -n "$types" ] || types=answer
+    do_send_and_wait "$to" "$type_" "$subject" "$body" "$files" \
+      "$report_path" "$types" "$timeout" "$interval"
+    ;;
+
   done)
     need_session
     [ -n "$summary" ] || die "done needs --summary (three sentences)"
@@ -179,8 +195,8 @@ case "$verb" in
     [ -n "$question" ] || die "ask needs --question"
     [ -n "$to" ] || to=${EMACS_AGENT_COORDINATOR:-}
     [ -n "$to" ] || die "no coordinator to ask; pass --to ADDRESS"
-    do_send "$to" question "${subject:-Question}" "$question" "" "" || exit 1
-    poll answer "$timeout" "$interval"
+    do_send_and_wait "$to" question "${subject:-Question}" "$question" "" "" \
+      answer "$timeout" "$interval"
     ;;
 
   check)
