@@ -421,6 +421,15 @@ them cached in a config directory, is how a skill ends up describing flags the
 command no longer has. This is the one idea worth keeping from Orca's own design
 (`orchestration/provenance.md`).
 
+**Org links are composed by Org and pasted by the terminal backend.** `C-c C-l`
+in vterm and Eat's default semi-char mode runs `org-insert-link' in a temporary
+Org buffer, preserving the normal stored-link completion and description
+prompt. The finished Org markup is then bracket-pasted into the terminal input
+without Enter, so an agent-session link can be copied from the dashboard and
+included in a prompt without either teaching the terminal Org syntax or
+submitting a half-finished message. The bracketed-paste implementation is shared
+with orchestration delivery; terminal-specific string handling has one owner.
+
 ## Fork/branch tracking — the one place with no ground truth
 
 There is **no hook event or transcript field that names a fork's parent** (this
