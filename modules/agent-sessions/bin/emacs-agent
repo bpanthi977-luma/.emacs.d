@@ -2,9 +2,9 @@
 # Talk to other agents through the Emacs agent-sessions dashboard.
 #
 #   emacs-agent spawn --type claude|codex --worktree DIR --task TEXT [--title T] [--model M]
-#   emacs-agent send --to ID --type TYPE --subject S [--body B] [--files csv] [--report P]
-#   emacs-agent done --summary S [--files csv] [--report P] [--subject S] [--to ID]
-#   emacs-agent ask --question Q [--timeout SECONDS] [--to ID]
+#   emacs-agent send --to ADDRESS --type TYPE --subject S [--body B] [--files csv] [--report P]
+#   emacs-agent done --summary S [--files csv] [--report P] [--subject S] [--to ADDRESS]
+#   emacs-agent ask --question Q [--timeout SECONDS] [--to ADDRESS]
 #   emacs-agent check [--types csv] [--peek]
 #   emacs-agent wait [--types csv] [--timeout SECONDS] [--interval SECONDS]
 #   emacs-agent list
@@ -169,7 +169,7 @@ case "$verb" in
     need_session
     [ -n "$summary" ] || die "done needs --summary (three sentences)"
     [ -n "$to" ] || to=${EMACS_AGENT_COORDINATOR:-}
-    [ -n "$to" ] || die "no coordinator to report to; pass --to ID"
+    [ -n "$to" ] || die "no coordinator to report to; pass --to ADDRESS"
     [ -n "$subject" ] || subject="Done"
     do_send "$to" done "$subject" "$summary" "$files" "$report_path"
     ;;
@@ -178,7 +178,7 @@ case "$verb" in
     need_session
     [ -n "$question" ] || die "ask needs --question"
     [ -n "$to" ] || to=${EMACS_AGENT_COORDINATOR:-}
-    [ -n "$to" ] || die "no coordinator to ask; pass --to ID"
+    [ -n "$to" ] || die "no coordinator to ask; pass --to ADDRESS"
     do_send "$to" question "${subject:-Question}" "$question" "" "" || exit 1
     poll answer "$timeout" "$interval"
     ;;

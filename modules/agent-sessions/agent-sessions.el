@@ -3265,16 +3265,26 @@ the path it came from is rarely what the surrounding prose wants to read."
      :description (file-name-nondirectory (directory-file-name path)))
     t))
 
+(defun bp/agent-sessions--parse-session-link (link)
+  "Return (AGENT SESSION-ID WORKTREE) parsed from LINK, or nil.
+LINK may include the `agent-session:' prefix or only its Org handler payload."
+  (let ((payload (if (string-prefix-p "agent-session:" link)
+                     (substring link (length "agent-session:"))
+                   link)))
+    (when (string-match "\\`\\([^:]+\\)::\\([^:]+\\)::\\(.*\\)\\'" payload)
+      (list (match-string 1 payload)
+            (match-string 2 payload)
+            (match-string 3 payload)))))
+
 (defun bp/agent-sessions--org-follow-link (link &optional _arg)
   "Follow an `agent-session:' LINK, jumping to or resuming the session.
 LINK is AGENT::SESSION-ID::WORKTREE-PATH, as produced by the `:store'
 handler.  Using a dedicated link type (rather than an `elisp:' link) avoids
 the confirmation prompt Org shows before running arbitrary elisp."
-  (if (string-match "\\`\\([^:]+\\)::\\([^:]+\\)::\\(.*\\)\\'" link)
-      (bp/agent-session-open (match-string 3 link)
-                             (match-string 1 link)
-                             (match-string 2 link))
-    (error "Malformed agent-session link: %s" link)))
+  (pcase (bp/agent-sessions--parse-session-link link)
+    (`(,agent ,session-id ,worktree)
+     (bp/agent-session-open worktree agent session-id))
+    (_ (error "Malformed agent-session link: %s" link))))
 
 (defun bp/agent-sessions--org-store-link (&optional _interactive)
   "Store a link for the dashboard row at point, or for the session around point.
@@ -3504,6 +3514,12 @@ message is gone, but the identity it was filed under is not."
     (cond ((and from (bp/agent-sessions--session-for-id from)) from)
           (key (bp/agent-orchestration--live-id-for-key key)))))
 
+(defun bp/agent-orchestration--sender-address (msg)
+  "The durable address for replying to MSG, or its live terminal id."
+  (pcase (plist-get msg :from-key)
+    (`("session" ,session-id) session-id)
+    (_ (bp/agent-orchestration--sender-terminal msg))))
+
 (defun bp/agent-orchestration--record-poll (id)
   (puthash id (float-time) bp/agent-orchestration--polls))
 
@@ -3529,6 +3545,7 @@ A message restored from the database may have outlived the terminal that sent
 it, so the sender is resolved through its durable key: answerable when that
 conversation is live again, named but not addressable when it is not."
   (let* ((live (bp/agent-orchestration--sender-terminal msg))
+         (reply-to (bp/agent-orchestration--sender-address msg))
          (label (or (plist-get msg :from-label) (plist-get msg :from) "unknown")))
     (concat (format "--- [%s] from %s%s\n" (plist-get msg :type)
                     (or live label)
@@ -3544,9 +3561,9 @@ conversation is live again, named but not addressable when it is not."
             (let ((report (plist-get msg :report)))
               (if (and report (not (string-empty-p report)))
                   (format "Report: %s\n" report) ""))
-            (if live
+            (if reply-to
                 (format "Reply: emacs-agent send --to %s --type answer --subject \"...\"\n"
-                        live)
+                        reply-to)
               "Reply: the sender's terminal is not live here; nothing to reply to.\n"))))
 
 (defun bp/agent-orchestration--format-messages (messages)
@@ -3952,33 +3969,62 @@ stray worktree or branch behind."
                     (abbreviate-file-name dir) label brief
                     (if trust-note (concat "\nNote: " trust-note) "")))))))))
 
-(defun bp/agent-orchestration--logged-recipient (id)
-  "Return the most recent resumable session formerly hosted by terminal ID."
+(defun bp/agent-orchestration--logged-recipient (value &optional by-agent-session)
+  "Return the most recent resumable session matching VALUE.
+Match an agent session id when BY-AGENT-SESSION is non-nil, otherwise a
+terminal id."
   (when-let ((row (car (sqlite-select
                         (bp/agent-sessions--db)
-                        "SELECT agent_type, agent_sid, worktree, title
+                        (concat
+                         "SELECT agent_type, agent_sid, worktree, title
                            FROM sessions
-                          WHERE emacs_sid = ?
+                          WHERE " (if by-agent-session "agent_sid" "emacs_sid") " = ?
                             AND agent_type IS NOT NULL
                             AND agent_sid IS NOT NULL
                           ORDER BY opened_at DESC, id DESC
-                          LIMIT 1"
-                        (list id)))))
+                          LIMIT 1")
+                        (list value)))))
     (pcase-let ((`(,agent-type ,agent-sid ,worktree ,title) row))
       (list :agent-type agent-type :agent-session-id agent-sid
             :worktree worktree :worktree-path worktree :title title))))
 
-(defun bp/agent-orchestration--resolve-recipient (id)
-  "Resolve terminal ID to (CURRENT-ID SESSION REVIVE-P), or nil.
-A dead address follows its durable agent identity to an already-restored
-terminal before it is considered for revival."
-  (if-let ((session (bp/agent-sessions--session-for-id id)))
-      (list id session nil)
-    (when-let* ((logged (bp/agent-orchestration--logged-recipient id))
-                (key (bp/agent-orchestration--mail-key id logged)))
+(defun bp/agent-orchestration--link-recipient (address)
+  "Return resumable session metadata encoded by agent-session ADDRESS."
+  (when (string-prefix-p "agent-session:" address)
+    (pcase (bp/agent-sessions--parse-session-link address)
+      (`(,agent ,session-id ,worktree)
+       (list :agent-type agent :agent-session-id session-id
+             :worktree worktree :worktree-path worktree)))))
+
+(defun bp/agent-orchestration--live-session-recipient (session-id)
+  "Resolve agent SESSION-ID to (TERMINAL-ID SESSION nil), or nil."
+  (when-let* ((buf (bp/agent-sessions--buffer-for-agent-session session-id))
+              (id (buffer-local-value 'bp/agent-session-id buf))
+              (session (bp/agent-sessions--session-for-id id)))
+    (list id session nil)))
+
+(defun bp/agent-orchestration--resumable-recipient (address recipient)
+  "Resolve RECIPIENT metadata to a live terminal or revival from ADDRESS."
+  (when recipient
+    (let ((key (bp/agent-orchestration--mail-key address recipient)))
       (if-let ((current (bp/agent-orchestration--live-id-for-key key)))
           (list current (bp/agent-sessions--session-for-id current) nil)
-        (list id logged t)))))
+        (list address recipient t)))))
+
+(defun bp/agent-orchestration--resolve-recipient (address)
+  "Resolve ADDRESS to (CURRENT-ID SESSION REVIVE-P), or nil.
+ADDRESS may be a terminal id, raw agent session id, or `agent-session:' link."
+  (or (when-let ((session (bp/agent-sessions--session-for-id address)))
+        (list address session nil))
+      (when-let ((link (bp/agent-orchestration--link-recipient address)))
+        (or (bp/agent-orchestration--live-session-recipient
+             (plist-get link :agent-session-id))
+            (bp/agent-orchestration--resumable-recipient address link)))
+      (bp/agent-orchestration--live-session-recipient address)
+      (bp/agent-orchestration--resumable-recipient
+       address (bp/agent-orchestration--logged-recipient address))
+      (bp/agent-orchestration--resumable-recipient
+       address (bp/agent-orchestration--logged-recipient address t))))
 
 (defun bp/agent-orchestration--revive-recipient
     (coordinator-id coordinator recipient message)
