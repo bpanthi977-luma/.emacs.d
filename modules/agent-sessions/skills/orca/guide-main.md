@@ -143,21 +143,23 @@ immediately, that line is where to check the spelling.
 emacs-agent wait --types done,blocked,question,answer --timeout 90
 ```
 
-- Returns as soon as matching mail arrives, printing `messages: N` and the
-  messages. Each message names the worker that sent it. Keep `answer' in this
-  filter: a worker handling follow-up mail after its original `done' reports the
-  result as an `answer'. Omitting it leaves a completed result unread until the
-  wait times out.
-- On timeout it prints `messages: 0 (nothing after 90s; call wait again …)`.
+- Reads and prints every message as it arrives. `--types` only controls which
+  message ends the wait: a `status` update is consumed and shown before polling
+  continues, while `done`, `blocked`, `question`, or `answer` returns control.
+  Keep `answer` in this stop filter because follow-up work after a worker's
+  original `done` reports its result that way.
+- On timeout it prints `messages: 0 (no matching message after 90s; call wait
+  again …)`.
   **That is a checkpoint, not a failure.** Real tasks run 15–60 minutes. Call
   `wait` again; use `emacs-agent list` if you want to see that a worker is still
   alive. Do not re-dispatch or kill a worker for being slow.
 - Set your own tool's timeout above `--timeout`, or the tool call is killed
   before the wait returns. A wait prints a keepalive line to stderr every 15s so
   a long wait does not read as a hung command.
-- `wait` consumes what it returns. If several workers may finish together, keep
-  waiting until you have heard from each one you are expecting.
-- `emacs-agent check` reads mail without waiting; `check --peek` leaves it unread.
+- `wait` consumes everything it prints. If several workers may finish together,
+  keep waiting until you have heard from each one you are expecting.
+- `emacs-agent check` reads mail without waiting. Unlike `wait`, its `--types`
+  filters which messages are read; `check --peek` leaves them unread.
 
 Mail also reaches you when you are not waiting: if a worker reports while you are
 idle at your prompt, Emacs types the message into your terminal and submits it,
