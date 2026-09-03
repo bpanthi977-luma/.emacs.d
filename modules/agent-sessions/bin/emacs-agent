@@ -108,23 +108,34 @@ do_check() { # do_check TYPES CONSUME -> prints "messages: N" and the messages
   call "(bp/agent-orchestration-check \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$1")\" $consume)"
 }
 
-count_of() { printf '%s' "$1" | sed -n '1s/^messages: \([0-9]*\)$/\1/p'; }
+do_wait_check() { # do_wait_check STOP-TYPES -> state line, then all messages
+  call "(bp/agent-orchestration-wait-check \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$1")\")"
+}
 
-# Poll for mail until something matching arrives or the deadline passes.
-poll() { # poll TYPES TIMEOUT INTERVAL
+count_of() { printf '%s' "$1" | sed -n '1s/^messages: \([0-9]*\)$/\1/p'; }
+wait_state_of() { printf '%s' "$1" | sed -n '1s/^wait: //p'; }
+wait_messages_of() { printf '%s\n' "$1" | sed '1d'; }
+
+# Consume every message, but stop only when one matches TYPES.
+poll() { # poll STOP-TYPES TIMEOUT INTERVAL
   started=$(date +%s)
   last_ping=$started
   while :; do
-    out=$(do_check "$1" consume)
-    n=$(count_of "$out")
-    case "$n" in
-      ''|0) : ;;
-      *) printf '%s\n' "$out"; return 0 ;;
+    out=$(do_wait_check "$1")
+    state=$(wait_state_of "$out")
+    messages=$(wait_messages_of "$out")
+    case "$state" in
+      error) printf '%s\n' "$messages" >&2; return 1 ;;
+      continue|stop) : ;;
+      *) die "invalid wait response from Emacs: $out" ;;
     esac
+    n=$(count_of "$messages")
+    case "$n" in ''|0) : ;; *) printf '%s\n' "$messages" ;; esac
+    [ "$state" != stop ] || return 0
     now=$(date +%s)
     elapsed=$((now - started))
     [ "$elapsed" -lt "$2" ] || {
-      echo "messages: 0 (nothing after ${elapsed}s; call wait again to keep waiting)"
+      echo "messages: 0 (no matching message after ${elapsed}s; call wait again to keep waiting)"
       return 0
     }
     if [ $((now - last_ping)) -ge "$KEEPALIVE_EVERY" ]; then

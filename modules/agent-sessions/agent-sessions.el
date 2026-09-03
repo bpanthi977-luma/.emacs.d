@@ -4084,6 +4084,36 @@ TYPES is a comma-separated filter or nil.  Recording the read is what tells
           (when pending (bp/agent-sessions--refresh-if-visible))
           (bp/agent-orchestration--format-messages pending))))))
 
+(defun bp/agent-orchestration-wait-check (id types)
+  "Consume and return all of ID's mail, stopping on TYPES.
+The first output line is `wait: stop', `wait: continue', or `wait: error'.
+TYPES only controls the stop decision; every pending message is returned and
+consumed in the same snapshot so progress cannot become stale or race a later
+terminal message."
+  (if (null (bp/agent-sessions--session-for-id id))
+      (format "wait: error\nNo Emacs terminal registered for session id %s" id)
+    (bp/agent-orchestration--record-poll id)
+    (bp/agent-orchestration--hydrate id)
+    (let* ((filter (and types (not (string-empty-p types))
+                        (split-string types "," t "[ \t]+")))
+           (unknown (seq-remove
+                     (lambda (candidate)
+                       (member candidate bp/agent-orchestration-message-types))
+                     (or filter '())))
+           (pending (bp/agent-orchestration--pending id)))
+      (if unknown
+          (format "wait: error\nUnknown message type(s) in --types: %s"
+                  (string-join unknown ", "))
+        (let ((stop (and pending
+                         (or (null filter)
+                             (seq-some (lambda (message)
+                                         (member (plist-get message :type) filter))
+                                       pending)))))
+          (bp/agent-orchestration--consume pending)
+          (when pending (bp/agent-sessions--refresh-if-visible))
+          (concat (if stop "wait: stop\n" "wait: continue\n")
+                  (bp/agent-orchestration--format-messages pending)))))))
+
 (defun bp/agent-orchestration-list (id)
   "Describe the workers ID spawned, and ID's own coordinator if it has one."
   (if (null (bp/agent-sessions--session-for-id id))
