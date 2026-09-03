@@ -125,7 +125,9 @@ This prevents fork auto-detection from restoring a relationship removed with
   ;; rebuilds the map, so use setopt (not setq) to apply the change.
   (with-eval-after-load 'vterm
     (unless (member "M-m" vterm-keymap-exceptions)
-      (setopt vterm-keymap-exceptions (cons "M-m" vterm-keymap-exceptions))))
+      (setopt vterm-keymap-exceptions (cons "M-m" vterm-keymap-exceptions)))
+    (define-key vterm-mode-map (kbd "C-c C-l")
+                #'bp/agent-session-insert-org-link))
 
   ;; Same for eat: keys in `eat-semi-char-non-bound-keys' are NOT sent to the
   ;; terminal in semi-char mode, so they fall through to Emacs.  eat spells
@@ -134,6 +136,8 @@ This prevents fork auto-detection from restoring a relationship removed with
     (unless (member [?\e ?m] eat-semi-char-non-bound-keys)
       (setopt eat-semi-char-non-bound-keys
               (cons [?\e ?m] eat-semi-char-non-bound-keys)))
+    (define-key eat-mode-map (kbd "C-c C-l")
+                #'bp/agent-session-insert-org-link)
 
     ;; Whole-frame flicker while a Codex TUI is on screen.  Codex asks for a
     ;; blinking cursor (DECSCUSR), which puts eat into `eat--cursor-blink-mode';

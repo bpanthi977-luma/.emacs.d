@@ -17,6 +17,7 @@
 (require 'magit)
 (require 'magit-section)
 (require 'project)
+(require 'org)
 ;; Not autoloaded: `format-spec' renders the launch templates in
 ;; `bp/agent-orchestration-launch-commands', and a spawn is the first thing
 ;; that would notice it missing — long after this file loaded cleanly.
@@ -2693,6 +2694,25 @@ BUFNAME is the desired buffer name.  Loads the backend package lazily."
       ('eat (eat-term-send-string eat-terminal string)
             (eat-term-send-string eat-terminal "\r")))))
 
+(defun bp/agent-sessions--terminal-paste (buf string)
+  "Bracket-paste STRING into the terminal in BUF without submitting it."
+  (with-current-buffer buf
+    (cond
+     ((derived-mode-p 'vterm-mode) (vterm-send-string string t))
+     ((derived-mode-p 'eat-mode)
+      (eat-term-send-string-as-yank eat-terminal string))
+     (t (user-error "Current buffer is not an Eat or vterm terminal")))))
+
+(defun bp/agent-session-insert-org-link ()
+  "Prompt for an Org link and paste it into the current terminal input."
+  (interactive)
+  (let ((terminal (current-buffer))
+        (link (with-temp-buffer
+                (org-mode)
+                (call-interactively #'org-insert-link)
+                (buffer-substring-no-properties (point-min) (point-max)))))
+    (bp/agent-sessions--terminal-paste terminal link)))
+
 (defun bp/agent-sessions--create-terminal (dir &optional name)
   "Open a new terminal in DIR named <NAME>-<backend>.
 NAME defaults to DIR's basename (typically the worktree name).  The backend
@@ -3600,10 +3620,7 @@ delivery to exactly the session an orchestrator is most likely to be watching.
 Bracketed paste rather than plain input because a TUI submits on every newline
 it is *typed*, which would fire the agent's turn on the message's first line and
 feed it the rest as separate prompts."
-  (with-current-buffer buf
-    (pcase bp/agent-sessions-terminal
-      ('vterm (vterm-send-string text t))
-      ('eat (eat-term-send-string-as-yank eat-terminal text))))
+  (bp/agent-sessions--terminal-paste buf text)
   ;; The buffer travels as a timer argument, not in a closure: this file is
   ;; loaded with dynamic binding, so a lambda over `buf' would find it void
   ;; when the timer fires (the same reason `bp/agent-sessions-restore' passes
