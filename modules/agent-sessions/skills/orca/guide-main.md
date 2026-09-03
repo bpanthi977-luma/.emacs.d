@@ -172,6 +172,12 @@ emacs-agent send --to <worker-id> --type answer --subject "<the decision>" --bod
 A `blocked` message is not blocking: the worker gave up and stopped. Decide
 whether to respawn with a better brief, take the work yourself, or ask the human.
 
+`send` also accepts the old terminal id of a killed resumable session. If that
+conversation is already live under a new id, the message is routed there. If it
+is still dead, Emacs resumes it in a new terminal and supplies the message as
+the first prompt; the success response names the new terminal id. A terminal
+that never started an agent has no durable conversation and cannot be revived.
+
 When everything is in, do the part only you can do: reconcile the reports, say
 what actually landed and where, and name what is still open. A worker's `done`
 summary is its own account of its work — if the result matters, verify it rather
@@ -197,7 +203,9 @@ than repeating the claim.
   restores a session (`R` in the dashboard), its unread mail is waiting. Mail to
   a terminal that never started an agent is the exception — there is nothing to
   restore it to.
-- Ids are Emacs terminal ids (`11588-42`), stable for the life of the terminal.
+- Ids are Emacs terminal ids (`11588-42`). They are the live routing address,
+  but a send to a killed id can recover the logged agent conversation and
+  returns the replacement id to use from then on.
 - A worker that never fires an agent hook (a bare shell, a crashed launch) still
   appears in the dashboard, but with no agent status. If a spawn produces a row
   that never leaves `idle`, look at its terminal — the launch command failed.

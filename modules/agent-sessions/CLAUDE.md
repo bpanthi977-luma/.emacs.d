@@ -342,6 +342,17 @@ conversation is live again the reply command names its *current* terminal; when
 it is not, the message says so instead of printing an address that would reach
 either nobody or somebody else.
 
+**A killed address revives its conversation on the next send.** A terminal id
+is still the command-line address, but `send` falls back to the newest resumable
+session logged under that id. It first follows the durable agent-session key to
+an already-restored terminal, avoiding a duplicate; otherwise it resumes the
+conversation in a new terminal and supplies the formatted mail as the CLI's
+initial prompt. Passing the prompt at launch is what makes this reliable for
+Codex, whose first hook does not fire until its first prompt. The message is
+persisted and marked read because launch itself delivered it, and the send
+result names the replacement terminal id. A bare terminal has no agent-session
+key and therefore remains unaddressable after death.
+
 **Waiting polls from the shell, not from Emacs.** An emacsclient call runs on
 Emacs's only thread, so a blocking wait inside Emacs would freeze the editor for
 its whole duration — which for this feature is minutes. `emacs-agent wait` loops
