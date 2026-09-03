@@ -28,8 +28,8 @@ emacs-agent send --type status --subject "<short>" --body "<detail>"
 ```
 
 If the coordinator's terminal was killed, `done`, `ask`, and `send` revive its
-saved conversation and deliver the message there. The command output identifies
-the replacement terminal id.
+saved conversation as a child of the sender and deliver the message there. The
+command output identifies the replacement terminal id.
 
 Rules:
 
