@@ -24,7 +24,6 @@
 set -u
 
 selfdir=$(cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || selfdir=""
-KEEPALIVE_EVERY=15
 
 usage() {
   sed -n '3,17p' "$0" | sed -e 's/^# \{0,1\}//'
@@ -119,7 +118,6 @@ wait_messages_of() { printf '%s\n' "$1" | sed '1d'; }
 # Consume every message, but stop only when one matches TYPES.
 poll() { # poll STOP-TYPES TIMEOUT INTERVAL
   started=$(date +%s)
-  last_ping=$started
   while :; do
     out=$(do_wait_check "$1")
     state=$(wait_state_of "$out")
@@ -138,11 +136,6 @@ poll() { # poll STOP-TYPES TIMEOUT INTERVAL
       echo "messages: 0 (no matching message after ${elapsed}s; call wait again to keep waiting)"
       return 0
     }
-    if [ $((now - last_ping)) -ge "$KEEPALIVE_EVERY" ]; then
-      # Keeps the calling agent's tool from reading a long wait as a hang.
-      echo "{\"_keepalive\":true,\"elapsed\":$elapsed}" >&2
-      last_ping=$now
-    fi
     sleep "$3"
   done
 }
