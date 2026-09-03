@@ -359,16 +359,14 @@ after death.
 **Waiting polls from the shell, not from Emacs.** An emacsclient call runs on
 Emacs's only thread, so a blocking wait inside Emacs would freeze the editor for
 its whole duration — which for this feature is minutes. `emacs-agent wait` loops
-over cheap `check` calls instead, and prints a keepalive to stderr every 15s so
-the calling agent's tool does not read a long wait as a hung command.  A wait
-reads and consumes every message; its type filter only decides whether a batch
-ends the wait.  This distinction lets a coordinator see progress without stale
-`status' mail accumulating, while it continues polling until an actionable
-message arrives.  Emacs snapshots, classifies and consumes the batch in one
-call, avoiding the race where a terminal message arrives between a peek for
-matching types and a separate consume-all call.  The actionable filter includes
-`answer' because follow-up work after a worker's lifecycle `done' replies with
-that type.
+over cheap `check` calls instead.  A wait reads and consumes every message; its
+type filter only decides whether a batch ends the wait.  This distinction lets a
+coordinator see progress without stale `status' mail accumulating, while it
+continues polling until an actionable message arrives.  Emacs snapshots,
+classifies and consumes the batch in one call, avoiding the race where a
+terminal message arrives between a peek for matching types and a separate
+consume-all call.  The actionable filter includes `answer' because follow-up
+work after a worker's lifecycle `done' replies with that type.
 
 **Mail is pushed into an agent that is resting, and never into one mid-turn.**
 An orchestrator that is waiting collects its own mail; the case that needs help

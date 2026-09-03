@@ -154,8 +154,7 @@ emacs-agent wait --types done,blocked,question,answer --timeout 90
   `wait` again; use `emacs-agent list` if you want to see that a worker is still
   alive. Do not re-dispatch or kill a worker for being slow.
 - Set your own tool's timeout above `--timeout`, or the tool call is killed
-  before the wait returns. A wait prints a keepalive line to stderr every 15s so
-  a long wait does not read as a hung command.
+  before the wait returns.
 - `wait` consumes everything it prints. If several workers may finish together,
   keep waiting until you have heard from each one you are expecting.
 - `emacs-agent check` reads mail without waiting. Unlike `wait`, its `--types`
