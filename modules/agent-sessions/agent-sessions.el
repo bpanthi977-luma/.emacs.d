@@ -106,6 +106,11 @@ rebuilt from scratch on every hook event, and because plain terminals that
 have never fired a hook need the same key.  See
 `bp/agent-sessions--sort-tree-stable'.")
 
+(defvar-local bp/agent-session--resuming-session-id nil
+  "Agent session id this terminal was opened to resume.
+This bridges startup until the agent's first hook confirms its identity, so a
+message addressed through an older terminal can find this live replacement.")
+
 (defconst bp/agent-sessions-buffer-name "*Agent Sessions*")
 
 (defcustom bp/agent-sessions-terminal 'vterm
@@ -543,6 +548,8 @@ These fill in for vterm/eat buffers that have not (yet) fired an agent hook,
 so idle terminals still appear in the dashboard tree."
   (let ((info (bp/agent-sessions--buffer-repo-info buf)))
     (list :buffer buf
+          :agent-session-id
+          (buffer-local-value 'bp/agent-session--resuming-session-id buf)
           ;; Whatever is running right now, agent or not; the backend name only
           ;; when the terminal is sitting at its shell prompt.
           :agent-type (or (bp/agent-sessions--foreground-command buf)
@@ -3011,12 +3018,14 @@ The %s is replaced with the parent's own session id."
   :type '(alist :key-type symbol :value-type string))
 
 (defun bp/agent-session--spawn (worktree-path agent-type session-id commands
-                                              &optional branched-from)
+                                              &optional branched-from initial-prompt)
   "Open a terminal in WORKTREE-PATH and run COMMANDS's template for AGENT-TYPE.
 COMMANDS is an alist like `bp/agent-session-resume-commands'; its template's
 %s is filled with SESSION-ID.  When BRANCHED-FROM is non-nil (a cons
 \(PARENT-SID . LABEL)), tag the new terminal so the session it starts records
-that it was branched from that parent.  Returns the new terminal buffer."
+that it was branched from that parent.  When INITIAL-PROMPT is non-nil, append
+it as a shell-quoted argument to the launch command.  Returns the new terminal
+buffer."
   (let* ((agent (if (symbolp agent-type) agent-type (intern agent-type)))
          (template (alist-get agent commands))
          (default-directory (file-name-as-directory worktree-path)))
@@ -3030,16 +3039,27 @@ that it was branched from that parent.  Returns the new terminal buffer."
       (when (and branched-from (buffer-live-p buf))
         (with-current-buffer buf
           (setq-local bp/agent-session--branched-from branched-from)))
-      (bp/agent-sessions--terminal-send buf (format template session-id))
+      (bp/agent-sessions--terminal-send
+       buf (concat (format template session-id)
+                   (if initial-prompt
+                       (concat " " (shell-quote-argument initial-prompt))
+                     "")))
       buf)))
 
 ;;;###autoload
-(defun bp/agent-session-start (worktree-path agent-type session-id)
+(defun bp/agent-session-start (worktree-path agent-type session-id
+                                             &optional initial-prompt)
   "Open a vterm in WORKTREE-PATH and resume AGENT-TYPE's SESSION-ID.
 AGENT-TYPE is a symbol such as `claude' or `codex'.  This is the target of
-the `elisp:' links produced by `org-store-link' on a session row."
-  (bp/agent-session--spawn worktree-path agent-type session-id
-                           bp/agent-session-resume-commands))
+the `elisp:' links produced by `org-store-link' on a session row.  When
+INITIAL-PROMPT is non-nil, submit it as the resumed session's first prompt."
+  (let ((buf (bp/agent-session--spawn
+              worktree-path agent-type session-id
+              bp/agent-session-resume-commands nil initial-prompt)))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (setq-local bp/agent-session--resuming-session-id session-id)))
+    buf))
 
 (defun bp/agent-sessions--buffer-for-agent-session (session-id)
   "Return the live buffer running the agent session SESSION-ID, or nil.
@@ -3931,41 +3951,111 @@ stray worktree or branch behind."
                     (abbreviate-file-name dir) label brief
                     (if trust-note (concat "\nNote: " trust-note) "")))))))))
 
+(defun bp/agent-orchestration--logged-recipient (id)
+  "Return the most recent resumable session formerly hosted by terminal ID."
+  (when-let ((row (car (sqlite-select
+                        (bp/agent-sessions--db)
+                        "SELECT agent_type, agent_sid, worktree, title
+                           FROM sessions
+                          WHERE emacs_sid = ?
+                            AND agent_type IS NOT NULL
+                            AND agent_sid IS NOT NULL
+                          ORDER BY opened_at DESC, id DESC
+                          LIMIT 1"
+                        (list id)))))
+    (pcase-let ((`(,agent-type ,agent-sid ,worktree ,title) row))
+      (list :agent-type agent-type :agent-session-id agent-sid
+            :worktree worktree :worktree-path worktree :title title))))
+
+(defun bp/agent-orchestration--resolve-recipient (id)
+  "Resolve terminal ID to (CURRENT-ID SESSION REVIVE-P), or nil.
+A dead address follows its durable agent identity to an already-restored
+terminal before it is considered for revival."
+  (if-let ((session (bp/agent-sessions--session-for-id id)))
+      (list id session nil)
+    (when-let* ((logged (bp/agent-orchestration--logged-recipient id))
+                (key (bp/agent-orchestration--mail-key id logged)))
+      (if-let ((current (bp/agent-orchestration--live-id-for-key key)))
+          (list current (bp/agent-sessions--session-for-id current) nil)
+        (list id logged t)))))
+
+(defun bp/agent-orchestration--revive-recipient (recipient message)
+  "Resume RECIPIENT and submit MESSAGE as its first prompt.
+Return the new terminal id."
+  (let* ((prompt (concat "Orchestration mail revived this session.\n\n"
+                         (bp/agent-orchestration--format-message message)))
+         (buf (save-window-excursion
+                (bp/agent-session-start
+                 (plist-get recipient :worktree-path)
+                 (plist-get recipient :agent-type)
+                 (plist-get recipient :agent-session-id)
+                 prompt)))
+         (id (and (buffer-live-p buf)
+                  (buffer-local-value 'bp/agent-session-id buf)))
+         (title (plist-get recipient :title)))
+    (unless id
+      (error "Could not create a terminal for the revived session"))
+    (when (and title (not (string-empty-p title)))
+      (with-current-buffer buf
+        (setq-local bp/agent-session-title-override title)))
+    id))
+
+(defun bp/agent-orchestration--store-message (id message)
+  "Record MESSAGE in terminal ID's in-memory and durable mailboxes."
+  (plist-put message :to id)
+  (bp/agent-orchestration--mail-insert message)
+  (puthash id (append (bp/agent-orchestration--messages id) (list message))
+           bp/agent-orchestration--mail))
+
 (defun bp/agent-orchestration-send (from-id to type subject body files report)
-  "Queue a message from FROM-ID to TO and try to deliver it.  Returns a string."
-  (let ((type (if (or (null type) (string-empty-p type)) "status" type)))
+  "Send a message from FROM-ID to TO, reviving a killed recipient if needed."
+  (let ((type (if (or (null type) (string-empty-p type)) "status" type))
+        (sender (bp/agent-sessions--session-for-id from-id)))
     (cond
-     ((null (bp/agent-sessions--session-for-id from-id))
+     ((null sender)
       (format "No Emacs terminal registered for session id %s" from-id))
      ((not (member type bp/agent-orchestration-message-types))
       (format "Unknown message type `%s'; known types: %s" type
               (string-join bp/agent-orchestration-message-types ", ")))
      ((or (null to) (string-empty-p to))
       "A message needs a --to (an Emacs terminal id)")
-     ((null (bp/agent-sessions--session-for-id to))
-      (format "No live Emacs terminal for recipient %s" to))
      ((or (null subject) (string-empty-p (string-trim subject)))
       "A message needs a --subject")
      (t
-      (let* ((sender (bp/agent-sessions--session-for-id from-id))
-             (recipient (bp/agent-sessions--session-for-id to))
-             (msg (list :id (bp/agent-orchestration--next-id "msg")
-                        :from from-id
-                        :from-key (bp/agent-orchestration--mail-key from-id sender)
-                        :from-label (bp/agent-sessions--session-short-label sender)
-                        :to to
-                        :to-key (bp/agent-orchestration--mail-key to recipient)
-                        :type type
-                        :subject (string-trim subject)
-                        :body (or body "") :files (or files "")
-                        :report (or report "")
-                        :sent-at (bp/agent-sessions--now) :read nil)))
-        (bp/agent-orchestration--mail-insert msg)
-        (puthash to (append (bp/agent-orchestration--messages to) (list msg))
-                 bp/agent-orchestration--mail)
-        (bp/agent-orchestration-deliver to)
-        (bp/agent-sessions--refresh-if-visible)
-        (format "Sent %s to %s" type to))))))
+      (if-let ((resolved (bp/agent-orchestration--resolve-recipient to)))
+          (pcase-let* ((`(,current-id ,recipient ,revive-p) resolved)
+                       (msg (list :id (bp/agent-orchestration--next-id "msg")
+                                  :from from-id
+                                  :from-key (bp/agent-orchestration--mail-key
+                                             from-id sender)
+                                  :from-label (bp/agent-sessions--session-short-label
+                                               sender)
+                                  :to current-id
+                                  :to-key (bp/agent-orchestration--mail-key
+                                           current-id recipient)
+                                  :type type :subject (string-trim subject)
+                                  :body (or body "") :files (or files "")
+                                  :report (or report "")
+                                  :sent-at (bp/agent-sessions--now) :read nil)))
+            (condition-case err
+                (progn
+                  (when revive-p
+                    (setq current-id
+                          (bp/agent-orchestration--revive-recipient recipient msg)))
+                  (bp/agent-orchestration--store-message current-id msg)
+                  (if revive-p
+                      (bp/agent-orchestration--consume (list msg))
+                    (bp/agent-orchestration-deliver current-id))
+                  (bp/agent-sessions--refresh-if-visible)
+                  (concat (format "Sent %s to %s" type to)
+                          (cond (revive-p (format " (revived as %s)" current-id))
+                                ((not (equal current-id to))
+                                 (format " (routed to %s)" current-id))
+                                (t ""))))
+              (error (format "Could not send to recipient %s%s: %s"
+                             to (if revive-p " while reviving it" "")
+                             (error-message-string err)))))
+        (format "No live or resumable agent session for recipient %s" to))))))
 
 (defun bp/agent-orchestration-check (id types consume)
   "Return ID's unread mail, marking it read unless CONSUME is nil.
