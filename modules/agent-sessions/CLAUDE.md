@@ -384,14 +384,13 @@ An orchestrator that is waiting collects its own mail; the case that needs help
 is mail arriving for an agent that has finished its turn, which would otherwise
 sit unread until the human prompted it. So delivery fires on the `Stop` hook
 (via `bp/agent-orchestration-deliver`) and on arrival, and is gated on two
-things — three, counting the one learned the hard way. It has not read its
-inbox recently, which is what stops a waiting orchestrator being handed the same
-message twice (and when it defers for that reason it schedules a retry, because
-mail landing just after a wait gave up would otherwise wait for the next hook
-event). Its status is not `running', i.e. no turn is in progress. And something
-holds its terminal's foreground.
+things. Its status is not `running', i.e. no turn is in progress. And something
+holds its terminal's foreground. A wait needs no separate polling state: it runs
+inside an agent turn, while the status gate already prevents terminal delivery,
+and both inbox reads and push delivery atomically consume mail on Emacs's single
+thread. Whichever gets a message first owns it; the other sees no pending mail.
 
-Both of the latter are phrased as exclusions on purpose. Enumerating the states
+Both gates are phrased as exclusions on purpose. Enumerating the states
 that *are* fine has already failed once: the first version listed `idle' and
 `needs-attention', and `needs-attention' becomes `stopped' the moment the user
 looks at the terminal, so delivery quietly stopped for exactly the session an
