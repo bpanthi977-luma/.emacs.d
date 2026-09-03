@@ -183,6 +183,12 @@ sending agent in the dashboard, and supplies the message as the first prompt;
 the success response names the new terminal id. A terminal that never started
 an agent has no durable conversation and cannot be revived.
 
+The `--to` address may also be the agent's durable session id or a complete
+`agent-session:AGENT::SESSION-ID::WORKTREE` link copied from Org. Prefer one of
+those when it is available: `emacs-agent` resolves a running conversation to its
+current terminal and can revive a stopped one without the caller translating
+the durable identity into an ephemeral terminal id.
+
 When everything is in, do the part only you can do: reconcile the reports, say
 what actually landed and where, and name what is still open. A worker's `done`
 summary is its own account of its work — if the result matters, verify it rather
@@ -208,10 +214,10 @@ than repeating the claim.
   restores a session (`R` in the dashboard), its unread mail is waiting. Mail to
   a terminal that never started an agent is the exception — there is nothing to
   restore it to.
-- Ids are Emacs terminal ids (`11588-42`). They are the live routing address,
-  but a send to a killed id can recover the logged agent conversation and
-  returns the replacement id to use from then on. A recovered conversation is
-  attached as the sending agent's child.
+- Terminal ids (`11588-42`) are live routing addresses. Agent session ids and
+  `agent-session:` links are durable addresses. Any form routes to the current
+  terminal when one exists; a recovered conversation is attached as the
+  sending agent's child.
 - A worker that never fires an agent hook (a bare shell, a crashed launch) still
   appears in the dashboard, but with no agent status. If a spawn produces a row
   that never leaves `idle`, look at its terminal — the launch command failed.

@@ -314,14 +314,16 @@ uses, for the same reason.
 sent to.** Unread mail is exactly what the persistence rule above is for: the
 recipient cannot reconstruct a message it never saw, and a crash between a
 worker reporting and its coordinator reading would otherwise lose the report
-silently. But mail is *addressed* to a terminal id, which carries this Emacs's
-pid and dies with it, so the record files each message under the same identity a
-note or shared file uses: the agent's own session id, falling back to the
-terminal id. That fallback is deliberately not the buffer name that notes fall
-back to — a name is reused by a later terminal, and inheriting a stranger's
-unread mail (which is then *pasted into its prompt*) is a different order of
-wrong than inheriting a stale note. Mail under a terminal key therefore never
-survives a restart, which is correct: nothing can resume a bare shell.
+silently. A caller may address mail by current terminal id, raw agent session
+id, or a complete `agent-session:' link. Resolution turns each form into the
+current terminal or the metadata needed to revive the conversation; the record
+then files the message under the same identity a note or shared file uses: the
+agent's own session id, falling back to the terminal id. That fallback is
+deliberately not the buffer name that notes fall back to — a name is reused by a
+later terminal, and inheriting a stranger's unread mail (which is then *pasted
+into its prompt*) is a different order of wrong than inheriting a stale note.
+Mail under a terminal key therefore never survives a restart, which is correct:
+nothing can resume a bare shell.
 
 So there are two structures, and they answer different questions. The hash table
 is the working copy, keyed the way mail is addressed, and it is what the render
@@ -337,24 +339,25 @@ acted on. A killed terminal drops its working copy in
 `bp/agent-session--cleanup`, never the record.
 
 One consequence worth stating: a message can outlive the terminal that sent it,
-so the sender is resolved through its durable key at display time. When that
-conversation is live again the reply command names its *current* terminal; when
-it is not, the message says so instead of printing an address that would reach
-either nobody or somebody else.
+so the sender is resolved through its durable key at display time. The reply
+command names the durable agent session id when one exists, whether or not its
+terminal is currently live; only mail from a bare terminal falls back to an
+ephemeral address and becomes unreplyable when that terminal dies.
 
-**A killed address revives its conversation on the next send.** A terminal id
-is still the command-line address, but `send` falls back to the newest resumable
-session logged under that id. It first follows the durable agent-session key to
-an already-restored terminal, avoiding a duplicate; otherwise it resumes the
-conversation in a new terminal and supplies the formatted mail as the CLI's
-initial prompt. Passing the prompt at launch is what makes this reliable for
-Codex, whose first hook does not fire until its first prompt. The message is
-persisted and marked read because launch itself delivered it, and the send
-result names the replacement terminal id. Revival also installs the sender as
-the new terminal's coordinator and parent, including the worker environment, so
-the dashboard nests the revived session under the agent that brought it back.
-A bare terminal has no agent-session key and therefore remains unaddressable
-after death.
+**A durable or killed address revives its conversation on the next send.** A
+raw session id is resolved from the live registry and then the session log; a
+full `agent-session:' link is self-contained even when the log lacks a row. An
+old terminal id falls back to the newest resumable session logged under it. Each
+path first follows the durable agent-session key to an already-restored terminal,
+avoiding a duplicate; otherwise it resumes the conversation and supplies the
+formatted mail as the CLI's initial prompt. Passing the prompt at launch is what
+makes this reliable for Codex, whose first hook does not fire until its first
+prompt. The message is persisted and marked read because launch itself delivered
+it, and the send result names the replacement terminal id. Revival also installs
+the sender as the new terminal's coordinator and parent, including the worker
+environment, so the dashboard nests the revived session under the agent that
+brought it back. A bare terminal has no agent-session key and therefore remains
+unaddressable after death.
 
 **Waiting polls from the shell, not from Emacs.** An emacsclient call runs on
 Emacs's only thread, so a blocking wait inside Emacs would freeze the editor for

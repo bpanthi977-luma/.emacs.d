@@ -48,13 +48,12 @@ You may continue unrelated work in the current turn, but worker mail will not
 interrupt it. A worker that sent a question remains blocked until you collect
 the message with `wait` or finish the turn and let Emacs deliver it.
 
-Terminal addresses remain usable after their terminal is killed when they
-belonged to a resumable agent session. Sending to such an address restores the
-conversation in a new worker terminal, attaches it as a child of the sender in
-the dashboard, and submits the mail as its first prompt. If the conversation
-was already restored, the mail is routed to that live terminal instead. The
-command reports the new/current terminal id; a killed bare shell has no
-conversation to restore and still fails.
+`send --to` accepts a current terminal id, a durable agent session id, or a full
+`agent-session:AGENT::SESSION-ID::WORKTREE` link. Dead terminal addresses and
+durable addresses restore resumable conversations in a new worker terminal;
+already-restored conversations route to their live terminal. The command
+reports the new/current terminal id; a killed bare shell has no conversation to
+restore and still fails.
 
 `emacs-agent` only exists inside a terminal Emacs manages, and needs that Emacs
 running with its server started. If the command is missing, say so plainly —
