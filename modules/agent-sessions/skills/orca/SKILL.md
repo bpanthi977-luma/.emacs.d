@@ -1,23 +1,25 @@
 ---
 name: orca
 description: >-
-  Coordinate other agents from an Emacs-managed terminal: start a claude/codex
-  worker in another git worktree, give it a task, and receive its report either
-  by waiting in the current turn or automatically after yielding.
+  Coordinate and exchange messages with other agents from an Emacs-managed
+  terminal: start a claude/codex worker, send or reply to agent mail, and
+  receive reports either by waiting in the current turn or after yielding.
   Use when the user says "/orca", "/orca --main", "orchestrate this", "spawn a
   subagent", "run these in parallel", "dispatch this to another agent", or asks
-  you to supervise, wait for, or coordinate other agents. Also use when you find
-  yourself running as someone's worker (EMACS_AGENT_ROLE=worker) and need the
-  reporting protocol.
+  you to supervise, wait for, coordinate, or message other agents. Also use when
+  another agent's message identifies itself as "$orca (/orca)", or when you are
+  running as someone's worker (EMACS_AGENT_ROLE=worker) and need the reporting
+  protocol.
 ---
 
-# Orca — agent orchestration through Emacs
+# Orca — inter-agent coordination through Emacs
 
 The full, version-matched guide is printed by the `emacs-agent` command itself,
 so it cannot drift from the tool it documents. Load it now, then follow it:
 
-- **Coordinating others** — you were asked to orchestrate, the invocation
-  included `--main`, or you are about to spawn a worker:
+- **Coordinating or messaging other agents** — you were asked to orchestrate,
+  the invocation included `--main`, you are about to spawn a worker, or you
+  need to send or answer agent mail outside a worker lifecycle:
 
   ```bash
   emacs-agent guide --main
@@ -33,18 +35,18 @@ so it cannot drift from the tool it documents. Load it now, then follow it:
 Read whichever applies before running any other `emacs-agent` verb. If both
 apply (you are a worker that needs to spawn workers of its own), read both.
 
-Worker mail is queued immediately, but it is not injected while the recipient
-is running a turn. After spawning a worker, choose based on what the current
-turn needs:
+Agent mail is queued immediately, but it is not injected while the recipient
+is running a turn. After sending work or a message to another agent, choose
+based on what the current turn needs:
 
-- If you need the worker's result before responding, use `emacs-agent wait`.
-  It polls the mailbox and returns the message as command output; it does not
-  depend on idle-terminal delivery.
+- If you need the other agent's result before responding, use
+  `emacs-agent wait`. It polls the mailbox and returns the message as command
+  output; it does not depend on idle-terminal delivery.
 - Otherwise, yield normally instead of polling. Once you are idle, Emacs
   injects pending questions, blocked reports, and done reports as new input and
   starts another turn.
 
-You may continue unrelated work in the current turn, but worker mail will not
+You may continue unrelated work in the current turn, but agent mail will not
 interrupt it. A worker that sent a question remains blocked until you collect
 the message with `wait` or finish the turn and let Emacs deliver it.
 

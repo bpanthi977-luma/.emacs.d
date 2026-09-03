@@ -402,6 +402,13 @@ queued for `emacs-agent check' instead.
 Delivery is one bracketed paste plus a delayed Enter: typed plainly, every
 newline in the message would submit, firing the agent's turn on the first line.
 
+**Every rendered message identifies `$orca (/orca)' in its header.** The
+recipient may be a peer agent that was never spawned by the sender and has not
+loaded the skill, so "orchestration mail" or a coordinator/worker label is not
+enough context. Naming the skill in the payload makes both pushed mail and
+explicit inbox reads self-routing while the sender line states the relationship
+that actually exists.
+
 **Pre-trusting the spawn directory is a deliberate widening, not a convenience.**
 Both agent CLIs gate a directory they have never run in behind an interactive
 trust prompt, and a worker stopped there never reads its brief — so for the case

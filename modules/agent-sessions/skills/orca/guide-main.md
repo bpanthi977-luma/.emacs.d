@@ -1,10 +1,12 @@
-# Orchestrating agents from an Emacs terminal — coordinator guide
+# Coordinating and messaging agents from an Emacs terminal
 
-You are the **coordinator**. You run in a terminal Emacs owns, and you can start
-other agents in other worktrees, give each one a task, and block until they
-report. Your tool is `emacs-agent`, already on your PATH. Everything it does
-goes through the Emacs that owns this terminal, so the human sees every worker
-you start in the same dashboard (`M-x bp/agent-sessions-list`), marked as yours.
+You are the **coordinator** when supervising dispatched work. The same protocol
+also lets peer agents exchange messages without a parent/worker relationship.
+You run in a terminal Emacs owns, and can start other agents, give each one a
+task, send agent mail, and block until a reply or report arrives. Your tool is
+`emacs-agent`, already on your PATH. Everything it does goes through the Emacs
+that owns this terminal, so the human sees every worker you start in the same
+dashboard (`M-x bp/agent-sessions-list`), marked as yours.
 
 There is no task table, no dependency graph and no scheduler. **Your context is
 the plan.** Keep the list of who is doing what in your head (or in a file you
@@ -161,9 +163,10 @@ emacs-agent wait --types done,blocked,question,answer --timeout 90
 - `emacs-agent check` reads mail without waiting. Unlike `wait`, its `--types`
   filters which messages are read; `check --peek` leaves them unread.
 
-Mail also reaches you when you are not waiting: if a worker reports while you are
-idle at your prompt, Emacs types the message into your terminal and submits it,
-so you wake up with it as new input. Read it and continue the orchestration.
+Mail also reaches you when you are not waiting: if another agent writes while
+you are idle at your prompt, Emacs types the `$orca (/orca)` message into your
+terminal and submits it, so you wake up with it as new input. Read it and
+continue the coordination or conversation.
 
 ## 5. Answer questions, then synthesize
 

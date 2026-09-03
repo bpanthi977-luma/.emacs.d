@@ -1,4 +1,4 @@
-# Working under a coordinator — worker guide
+# Working for another agent — worker guide
 
 You are (or may be) a **worker**: another agent started you in this terminal with
 a task, and it is waiting to hear from you. Check your environment:
