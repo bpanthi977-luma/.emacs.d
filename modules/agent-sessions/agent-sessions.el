@@ -3078,8 +3078,9 @@ INITIAL-PROMPT is non-nil, submit it as the resumed session's first prompt."
 
 (defun bp/agent-sessions--buffer-for-agent-session (session-id)
   "Return the live buffer running the agent session SESSION-ID, or nil.
-SESSION-ID is the agent's own session id (a UUID) as recorded in
-`bp/agent-sessions' under :agent-session-id."
+Prefer an identity confirmed by an agent hook in `bp/agent-sessions'.  During
+startup, before Codex's first hook, also recognize the resume identity recorded
+on its terminal buffer in `bp/agent-session--resuming-session-id'."
   (catch 'found
     (maphash
      (lambda (_id session)
@@ -3088,6 +3089,14 @@ SESSION-ID is the agent's own session id (a UUID) as recorded in
            (when (buffer-live-p buf)
              (throw 'found buf)))))
      bp/agent-sessions)
+    (maphash
+     (lambda (_id buf)
+       (when (and (buffer-live-p buf)
+                  (equal (buffer-local-value
+                          'bp/agent-session--resuming-session-id buf)
+                         session-id))
+         (throw 'found buf)))
+     bp/agent-session-id->buffer)
     nil))
 
 ;;;###autoload
