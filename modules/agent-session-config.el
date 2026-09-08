@@ -69,12 +69,18 @@ Intended as :around advice for `eat--adjust-process-window-size'."
 
 (use-package agent-sessions
   :load-path "modules/agent-sessions"
-  :bind (:map bp/global-prefix-map
-	      (("a" . bp/agent-sessions-list)))
+  :bind (("M-A s" . bp/agent-sessions-send-region)
+         :map bp/global-prefix-map
+         (("a" . bp/agent-sessions-list)))
   :defer nil
   :config
   (setf bp/agent-sessions-show-all-worktrees t)
   (setf bp/agent-sessions-terminal 'eat)
+  ;; The region command has already put the sharing agent first and the rest
+  ;; in view-recency order; keep Ivy from replacing that with alphabetic order.
+  (with-eval-after-load 'ivy
+    (add-to-list 'ivy-sort-functions-alist
+                 '(bp/agent-sessions-send-region . nil)))
   (add-to-list 'project-switch-commands '(bp/agent-session-switch-or-new "Agent Session"))
   ;; Let M-m (bp/global-prefix) reach Emacs instead of being swallowed by vterm.
   ;; `vterm-keymap-exceptions' keys are removed from `vterm-mode-map'; its :set

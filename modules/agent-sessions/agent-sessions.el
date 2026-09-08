@@ -103,6 +103,15 @@ rebuilt from scratch on every hook event, and because plain terminals that
 have never fired a hook need the same key.  See
 `bp/agent-sessions--sort-tree-stable'.")
 
+(defvar-local bp/agent-session--viewed-at nil
+  "When the user most recently selected this terminal buffer.
+Used to order the agent picker shown by `bp/agent-sessions-send-region'.")
+
+(defvar bp/agent-sessions--last-focused-buffer nil
+  "Buffer seen by the previous focus-hook run.
+This distinguishes actually selecting a terminal from hook runs caused by
+output arriving in a terminal that was already selected.")
+
 (defvar-local bp/agent-session--resuming-session-id nil
   "Agent session id this terminal was opened to resume.
 This bridges startup until the agent's first hook confirms its identity, so a
@@ -232,6 +241,8 @@ Populates the cache on first use; `bp/agent-sessions-refresh' clears it."
 
 (defun bp/agent-session--cleanup ()
   (when bp/agent-session-id
+    (when (eq bp/agent-sessions--last-focused-buffer (current-buffer))
+      (setq bp/agent-sessions--last-focused-buffer nil))
     (bp/agent-sessions--log-close-buffer)
     (remhash bp/agent-session-id bp/agent-session-id->buffer)
     (remhash bp/agent-session-id bp/agent-sessions)
@@ -324,6 +335,11 @@ spuriously."
   (let* ((buf (window-buffer (selected-window)))
          (id (and (buffer-live-p buf) (buffer-local-value 'bp/agent-session-id buf)))
          (changed nil))
+    (unless (eq buf bp/agent-sessions--last-focused-buffer)
+      (setq bp/agent-sessions--last-focused-buffer buf)
+      (when id
+        (with-current-buffer buf
+          (setq-local bp/agent-session--viewed-at (current-time)))))
     (when id
       (let ((session (gethash id bp/agent-sessions)))
         ;; A user-set unread mark clears the same way, and for the same reason:
@@ -3668,6 +3684,134 @@ feed it the rest as separate prompts."
            ('vterm (vterm-send-return))
            ('eat (eat-term-send-string eat-terminal "\r"))))))
    buf))
+
+;;; Sending selected text to an agent
+
+(defun bp/agent-sessions--prompt-agent-p (entry)
+  "Non-nil when ENTRY names a live Claude or Codex terminal.
+The foreground-process check is important: a registry row survives an agent
+exiting back to its shell, where submitting prose would execute it as a shell
+command instead of sending it to an agent."
+  (let* ((session (plist-get entry :session))
+         (buf (plist-get session :buffer))
+         (agent (downcase (format "%s" (plist-get session :agent-type))))
+         (foreground (and (buffer-live-p buf)
+                          (bp/agent-sessions--foreground-command buf))))
+    (and foreground
+         (not (equal (plist-get session :last-event) "SessionEnd"))
+         (or (member agent '("claude" "codex"))
+             (member (downcase foreground) '("claude" "codex"))))))
+
+(defun bp/agent-sessions--prompt-entry-viewed-at (entry)
+  "Return when ENTRY's terminal was most recently selected, or nil."
+  (let ((buf (plist-get (plist-get entry :session) :buffer)))
+    (and (buffer-live-p buf)
+         (buffer-local-value 'bp/agent-session--viewed-at buf))))
+
+(defun bp/agent-sessions--sort-prompt-entries (entries)
+  "Return promptable ENTRIES ordered by most recently viewed terminal."
+  (sort (copy-sequence entries)
+        (lambda (a b)
+          (let ((ta (bp/agent-sessions--prompt-entry-viewed-at a))
+                (tb (bp/agent-sessions--prompt-entry-viewed-at b)))
+            (cond ((and ta tb (not (time-equal-p ta tb))) (time-less-p tb ta))
+                  (ta t)
+                  ((bp/agent-sessions--entry-created a)
+                   (if (bp/agent-sessions--entry-created b)
+                       (time-less-p (bp/agent-sessions--entry-created b)
+                                    (bp/agent-sessions--entry-created a))
+                     t))
+                  ((bp/agent-sessions--entry-created b) nil)
+                  (t (string< (bp/agent-sessions--entry-buffer-name a)
+                              (bp/agent-sessions--entry-buffer-name b))))))))
+
+(defun bp/agent-sessions--entry-shared-file (entry truename)
+  "Return ENTRY's shared-file record for TRUENAME, or nil."
+  (seq-find
+   (lambda (file)
+     (equal (ignore-errors (file-truename (plist-get file :path))) truename))
+   (bp/agent-sessions--session-files (plist-get entry :session))))
+
+(defun bp/agent-sessions--prompt-entries (source-file)
+  "Return live agent entries in picker order for SOURCE-FILE.
+The agent that most recently shared SOURCE-FILE comes first.  Every remaining
+agent is ordered by when the user last viewed its terminal."
+  (let* ((entries (bp/agent-sessions--sort-prompt-entries
+                   (seq-filter #'bp/agent-sessions--prompt-agent-p
+                               (bp/agent-sessions--live-entries))))
+         (truename (and source-file (file-truename source-file)))
+         owner owner-updated)
+    (when truename
+      (dolist (entry entries)
+        (when-let ((file (bp/agent-sessions--entry-shared-file entry truename)))
+          (let ((updated (plist-get file :updated-at)))
+            (when (or (null owner)
+                      (> (or updated 0) (or owner-updated 0)))
+              (setq owner entry owner-updated updated))))))
+    (if owner
+        (cons owner (delq owner entries))
+      entries)))
+
+(defun bp/agent-sessions--prompt-entry-label (entry)
+  "Return a unique, human-readable completion label for ENTRY."
+  (let* ((session (plist-get entry :session))
+         (buf (plist-get session :buffer)))
+    (format "%s — %s"
+            (buffer-name buf)
+            (bp/agent-sessions--session-label session))))
+
+(defun bp/agent-sessions--region-prompt (remark selection source beg end)
+  "Combine REMARK and SELECTION with their SOURCE location.
+BEG and END are the selected buffer positions."
+  (let ((where (if source
+                   (format "%s, lines %d-%d"
+                           (abbreviate-file-name source)
+                           (line-number-at-pos beg)
+                           (line-number-at-pos (max beg (1- end))))
+                 (format "buffer %s, lines %d-%d"
+                         (buffer-name)
+                         (line-number-at-pos beg)
+                         (line-number-at-pos (max beg (1- end)))))))
+    (concat (unless (string-empty-p remark) (concat remark "\n\n"))
+            (format "Selected text from %s:\n\n" where)
+            selection)))
+
+;;;###autoload
+(defun bp/agent-sessions-send-region (beg end)
+  "Prompt for a remark and send it with the active region to an agent.
+When the current file was shared through the agent dashboard, its sharing
+agent is the default choice.  Other live Claude/Codex agents are offered in
+most-recently-viewed order."
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (user-error "Select some text first")))
+  (let* ((source buffer-file-name)
+         (selection (buffer-substring-no-properties beg end))
+         (entries (bp/agent-sessions--prompt-entries source)))
+    (unless entries
+      (user-error "No live Claude or Codex agents are available"))
+    (let* ((candidates
+            (mapcar (lambda (entry)
+                      (cons (bp/agent-sessions--prompt-entry-label entry) entry))
+                    entries))
+           ;; Keep the ownership/recency ordering in completion UIs that honor
+           ;; standard completion metadata.
+           (completion-extra-properties
+            '(:display-sort-function identity :cycle-sort-function identity))
+           (choice (completing-read "Send region to agent: "
+                                    (mapcar #'car candidates) nil t nil nil
+                                    (caar candidates)))
+           (entry (cdr (assoc choice candidates)))
+           (remark (read-string "Question or remark: "))
+           (text (bp/agent-sessions--region-prompt
+                  remark selection source beg end))
+           (buf (plist-get (plist-get entry :session) :buffer)))
+      (unless (and (buffer-live-p buf)
+                   (bp/agent-sessions--foreground-command buf))
+        (user-error "The selected agent is no longer running"))
+      (bp/agent-orchestration--paste buf text)
+      (message "Sent selected text to %s" (buffer-name buf)))))
 
 (defun bp/agent-orchestration-deliver (id)
   "Type ID's pending mail into its terminal, when that is the right thing to do.
