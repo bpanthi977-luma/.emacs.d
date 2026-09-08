@@ -3149,18 +3149,33 @@ one anyway."
               ("crash" "Emacs died")
               (other (or other "?"))))))
 
+(defun bp/agent-sessions--restore-title (buf row)
+  "Restore session-log ROW's saved title as a user override on BUF.
+The log records the title that labelled the old terminal.  Making it an
+override preserves that label when the resumed agent emits fresh OSC titles."
+  (when (buffer-live-p buf)
+    (when-let ((title (plist-get row :title)))
+      (with-current-buffer buf
+        (setq-local bp/agent-session-title-override title))
+      (bp/agent-sessions--refresh-if-visible)))
+  buf)
+
 (defun bp/agent-sessions--restore-row (row)
   "Resume the session described by ROW, or jump to it if it is already open."
-  (let ((wt (plist-get row :worktree))
-        (sid (plist-get row :agent-sid))
-        (type (intern (plist-get row :agent-type))))
+  (let* ((wt (plist-get row :worktree))
+         (sid (plist-get row :agent-sid))
+         (type (intern (plist-get row :agent-type)))
+         (live (bp/agent-sessions--buffer-for-agent-session sid)))
     (cond
-     ((bp/agent-sessions--buffer-for-agent-session sid)
-      (pop-to-buffer (bp/agent-sessions--buffer-for-agent-session sid))
+     (live
+      (bp/agent-sessions--restore-title live row)
+      (pop-to-buffer live)
       (message "That session is already open."))
      ((not (file-directory-p wt))
       (message "Worktree is gone: %s" wt))
-     (t (bp/agent-session-start wt type sid)))))
+     (t
+      (bp/agent-sessions--restore-title
+       (bp/agent-session-start wt type sid) row)))))
 
 ;;;###autoload
 (defun bp/agent-sessions-restore ()
