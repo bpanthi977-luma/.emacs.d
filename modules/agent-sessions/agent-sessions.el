@@ -3777,17 +3777,16 @@ BEG and END are the selected buffer positions."
             selection)))
 
 ;;;###autoload
-(defun bp/agent-sessions-send-region ()
+(defun bp/agent-sessions-send-region (beg end)
   "Prompt for a remark and send it with the active region to an agent.
 When the current file was shared through the agent dashboard, its sharing
 agent is the default choice.  Other live Claude/Codex agents are offered in
 most-recently-viewed order."
-  (interactive)
-  (unless (use-region-p)
-    (user-error "Select some text first"))
-  (let* ((beg (region-beginning))
-         (end (region-end))
-         (source buffer-file-name)
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (user-error "Select some text first")))
+  (let* ((source buffer-file-name)
          (selection (buffer-substring-no-properties beg end))
          (entries (bp/agent-sessions--prompt-entries source)))
     (unless entries
