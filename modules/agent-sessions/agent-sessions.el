@@ -268,6 +268,11 @@ branched/forked from.  Set on a freshly branched terminal (by the `b' command
 or `bp/agent-sessions-mark-parent') so its agent session records the parentage
 once its first hook fires, and preserved across subsequent hook events.")
 
+(defvar-local bp/agent-session--parent-detached-p nil
+  "Non-nil when this session was explicitly detached from its fork parent.
+This prevents fork auto-detection from restoring a relationship removed with
+`bp/agent-sessions-detach-parent'.")
+
 (defvar-local bp/agent-session--marked-unread nil
   "When non-nil, the user marked this session as needing attention (`u').
 Kept on the buffer rather than in `bp/agent-sessions' so it works for a plain
@@ -417,6 +422,8 @@ the body names the agent type, state, and its terminal title (task summary)."
              (branched-from (or (and existing (plist-get existing :branched-from))
                                 (buffer-local-value 'bp/agent-session--branched-from buf)
                                 (and (not existing)
+                                     (not (buffer-local-value
+                                           'bp/agent-session--parent-detached-p buf))
                                      (equal agent-type "claude")
                                      transcript-path
                                      (bp/agent-sessions--detect-parent
@@ -2604,6 +2611,29 @@ or `codex fork' by hand)."
             (bp/agent-sessions--refresh)
             (message "Marked as branched from %s" (cdr bf)))))))))
 
+(defun bp/agent-sessions-detach-parent ()
+  "Detach the child session at point from its recorded fork parent."
+  (interactive)
+  (let* ((session (bp/agent-sessions--session-at-point))
+         (parent (and session (plist-get session :branched-from)))
+         (buf (and session (plist-get session :buffer)))
+         (id (and (buffer-live-p buf)
+                  (buffer-local-value 'bp/agent-session-id buf)))
+         (real (and id (gethash id bp/agent-sessions))))
+    (cond
+     ((null session) (message "Point is not on a session row."))
+     ((null parent) (message "Session is not attached to a parent."))
+     ((not (buffer-live-p buf)) (message "Session has no live buffer."))
+     (t
+      (with-current-buffer buf
+        (setq-local bp/agent-session--branched-from nil)
+        (setq-local bp/agent-session--parent-detached-p t))
+      (when real
+        (puthash id (plist-put (copy-sequence real) :branched-from nil)
+                 bp/agent-sessions))
+      (bp/agent-sessions--refresh)
+      (message "Detached from %s." (cdr parent))))))
+
 (defun bp/agent-sessions-edit-title ()
   "Edit the title of the session at point.
 The chosen title is stored as a user override on the session's buffer, so it
@@ -4261,6 +4291,7 @@ out one that is already taken — or hide one that just became available."
 (define-key bp/agent-sessions-mode-map (kbd "k") #'bp/agent-sessions-kill)
 (define-key bp/agent-sessions-mode-map (kbd "b") #'bp/agent-sessions-branch)
 (define-key bp/agent-sessions-mode-map (kbd "B") #'bp/agent-sessions-mark-parent)
+(define-key bp/agent-sessions-mode-map (kbd "D") #'bp/agent-sessions-detach-parent)
 (define-key bp/agent-sessions-mode-map (kbd "t") #'bp/agent-sessions-cycle-state)
 (define-key bp/agent-sessions-mode-map (kbd "SPC") #'bp/agent-sessions-edit-title)
 (define-key bp/agent-sessions-mode-map (kbd "u") #'bp/agent-sessions-mark-unread)

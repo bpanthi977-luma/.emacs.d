@@ -67,43 +67,6 @@ Intended as :around advice for `eat--adjust-process-window-size'."
         (bp/eat--coalesce-after-resize))
       (funcall fn process windows))))
 
-(defvar-local bp/agent-session--parent-detached-p nil
-  "Non-nil when this session was explicitly detached from its fork parent.
-This prevents fork auto-detection from restoring a relationship removed with
-`bp/agent-sessions-detach-parent'.")
-
-(defun bp/agent-session--respect-detached-parent (fn session-id agent-type payload-file)
-  "Call FN without fork auto-detection for an explicitly detached session."
-  (let ((buf (gethash session-id bp/agent-session-id->buffer)))
-    (if (and (buffer-live-p buf)
-             (buffer-local-value 'bp/agent-session--parent-detached-p buf))
-        (let ((bp/agent-session-auto-detect-branches nil))
-          (funcall fn session-id agent-type payload-file))
-      (funcall fn session-id agent-type payload-file))))
-
-(defun bp/agent-sessions-detach-parent ()
-  "Detach the child session at point from its recorded fork parent."
-  (interactive)
-  (let* ((session (bp/agent-sessions--session-at-point))
-         (parent (and session (plist-get session :branched-from)))
-         (buf (and session (plist-get session :buffer)))
-         (id (and (buffer-live-p buf)
-                  (buffer-local-value 'bp/agent-session-id buf)))
-         (real (and id (gethash id bp/agent-sessions))))
-    (cond
-     ((null session) (message "Point is not on a session row."))
-     ((null parent) (message "Session is not attached to a parent."))
-     ((not (buffer-live-p buf)) (message "Session has no live buffer."))
-     (t
-      (with-current-buffer buf
-        (setq-local bp/agent-session--branched-from nil)
-        (setq-local bp/agent-session--parent-detached-p t))
-      (when real
-        (puthash id (plist-put (copy-sequence real) :branched-from nil)
-                 bp/agent-sessions))
-      (bp/agent-sessions--refresh)
-      (message "Detached from %s." (cdr parent))))))
-
 (use-package agent-sessions
   :load-path "modules/agent-sessions"
   :bind (:map bp/global-prefix-map
@@ -113,13 +76,6 @@ This prevents fork auto-detection from restoring a relationship removed with
   (setf bp/agent-sessions-show-all-worktrees t)
   (setf bp/agent-sessions-terminal 'eat)
   (add-to-list 'project-switch-commands '(bp/agent-session-switch-or-new "Agent Session"))
-  (define-key bp/agent-sessions-mode-map (kbd "D")
-              #'bp/agent-sessions-detach-parent)
-  (unless (advice-member-p #'bp/agent-session--respect-detached-parent
-                           'bp/agent-hook-notify)
-    (advice-add 'bp/agent-hook-notify :around
-                #'bp/agent-session--respect-detached-parent))
-
   ;; Let M-m (bp/global-prefix) reach Emacs instead of being swallowed by vterm.
   ;; `vterm-keymap-exceptions' keys are removed from `vterm-mode-map'; its :set
   ;; rebuilds the map, so use setopt (not setq) to apply the change.
