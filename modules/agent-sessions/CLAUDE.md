@@ -379,23 +379,34 @@ timeout behavior and incremental status output remain owned by their existing
 chokepoints.  `ask' uses the same composition for its coordinator-directed
 question flow.
 
-**Codex mail uses Codex's native queue, never its terminal composer.**
+**Agent mail preserves the human's terminal composer.** Codex has a native
+session queue, so its mail never touches the terminal. Claude Code does not
+expose a session-addressed CLI queue, but versions 2.1.247 and newer provide
+`chat:stash` and `chat:queueSubmit`. Delivery sends the configured stash key,
+bracket-pastes the mail into the cleared composer, queue-submits it, and then
+restores the stashed human draft. The key byte strings are customizable as
+`bp/agent-orchestration-claude-stash-key` and
+`bp/agent-orchestration-claude-queue-submit-key` for users who rebind those
+Claude actions.
+
 An hour-long turn is exactly when a question, answer, blocked report, or done
 report must not wait for `Stop'. When one of those types arrives for a running
-Codex conversation, delivery calls `codex queue --thread … --message …' with
-all pending mail in order. A plain `status' does not trigger steering, but an
+conversation, delivery queues all pending mail in order. For Codex it calls
+`codex queue --thread … --message …`; for Claude it uses the TUI action sequence
+above. A plain `status' does not trigger steering, but an
 earlier status rides along with later actionable mail so delivery cannot reorder
 the inbox. Codex must acknowledge the queue before the messages are consumed;
 failure leaves them unread for `check' or a later retry. Resting Codex sessions
 use the same native queue: terminal paste would share the human's composer, so
 a half-written human prompt could otherwise be submitted as part of agent mail.
-Other agents keep the idle behavior because typing into a busy TUI is not a
-portable queue API.
+Resting Claude sessions use the same stash/queue/restore sequence. Other agents
+keep the idle behavior because typing into a busy TUI is not a portable queue
+API.
 
 Idle delivery fires on the `Stop` hook (via
 `bp/agent-orchestration-deliver`) and on arrival. It requires both a non-running
 status and something holding the terminal's foreground, and is only the fallback
-for agents without a native queue. Inbox reads, native queue acceptance, and
+for agents without a known queue action. Inbox reads, queue acceptance, and
 idle delivery consume mail on Emacs's single thread, so whichever gets a message
 first owns it and the others see no pending mail.
 
