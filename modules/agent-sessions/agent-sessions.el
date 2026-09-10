@@ -3471,11 +3471,24 @@ vocabulary, not ours, and a list here would be wrong within a release."
 (defcustom bp/agent-orchestration-push-when-idle t
   "When non-nil, automatically hand queued mail to a recipient agent.
 Codex mail uses its native session queue, whether the conversation is running
-or resting, so it never shares the human's terminal composer.  Plain `status'
-mail alone waits while Codex is running.  Resting agents without a native queue
-receive mail through their terminal.  `emacs-agent wait' remains the explicit
-way for an agent to collect its own mail."
+or resting, so it never shares the human's terminal composer.  Claude mail uses
+Claude Code's stash and queue-submit actions, preserving and restoring a human
+draft around the delivery.  Plain `status' mail alone waits while either agent
+is running.  `emacs-agent wait' remains the explicit way for an agent to collect
+its own mail."
   :type 'boolean)
+
+(defcustom bp/agent-orchestration-claude-stash-key "\C-s"
+  "Terminal bytes bound to Claude Code's `chat:stash' action.
+The default is Claude Code's default Ctrl+S binding.  Keep this synchronized
+with `~/.claude/keybindings.json' if that action is rebound."
+  :type 'string)
+
+(defcustom bp/agent-orchestration-claude-queue-submit-key "\C-x\r"
+  "Terminal bytes bound to Claude Code's `chat:queueSubmit' action.
+The default is Claude Code's default Ctrl+X Enter chord.  Keep this synchronized
+with `~/.claude/keybindings.json' if that action is rebound."
+  :type 'string)
 
 (defconst bp/agent-orchestration--submit-delay 0.5
   "Seconds between pasting a message into a TUI and pressing Enter.
@@ -3681,6 +3694,18 @@ delivery to exactly the session an orchestrator is most likely to be watching.
        (let ((sid (plist-get session :agent-session-id)))
          (and (stringp sid) (not (string-empty-p sid))))))
 
+(defun bp/agent-orchestration--claude-session-p (session)
+  "Non-nil when SESSION is a Claude conversation."
+  (equal (downcase (format "%s" (plist-get session :agent-type))) "claude"))
+
+(defun bp/agent-orchestration--terminal-input (buf string)
+  "Send raw terminal input STRING to BUF without paste handling or Enter."
+  (with-current-buffer buf
+    (cond
+     ((derived-mode-p 'vterm-mode) (vterm-send-string string))
+     ((derived-mode-p 'eat-mode) (eat-term-send-string eat-terminal string))
+     (t (user-error "Current buffer is not an Eat or vterm terminal")))))
+
 (defun bp/agent-orchestration--call-with-timeout (program args timeout)
   "Run PROGRAM with ARGS, returning its exit status within TIMEOUT seconds.
 Process output goes to the current buffer.  Return nil after an error or
@@ -3737,6 +3762,43 @@ explicit inbox check."
                      (let ((detail (string-trim (buffer-string))))
                        (if (string-empty-p detail) "" (format " (%s)" detail))))
             nil))))))
+
+(defun bp/agent-orchestration--claude-restore-draft (buf)
+  "Restore the prompt stashed while delivering agent mail to Claude in BUF."
+  (when (buffer-live-p buf)
+    (bp/agent-orchestration--terminal-input
+     buf bp/agent-orchestration-claude-stash-key)))
+
+(defun bp/agent-orchestration--claude-submit-mail (buf)
+  "Queue the prepared agent-mail prompt in Claude BUF, then restore its draft."
+  (when (buffer-live-p buf)
+    (bp/agent-orchestration--terminal-input
+     buf bp/agent-orchestration-claude-queue-submit-key)
+    (run-at-time bp/agent-orchestration--submit-delay nil
+                 #'bp/agent-orchestration--claude-restore-draft buf)))
+
+(defun bp/agent-orchestration--claude-paste-mail (buf text)
+  "Paste agent-mail TEXT into the now-empty composer in Claude BUF."
+  (when (buffer-live-p buf)
+    (bp/agent-sessions--terminal-paste buf text)
+    (run-at-time bp/agent-orchestration--submit-delay nil
+                 #'bp/agent-orchestration--claude-submit-mail buf)))
+
+(defun bp/agent-orchestration--claude-queue (session messages)
+  "Queue MESSAGES in Claude SESSION without absorbing a human's draft.
+Claude Code has no session-addressed queue command.  Its TUI does provide
+`chat:stash' and `chat:queueSubmit', however, so stash the current composer,
+paste and queue the mail, then restore the composer after Claude clears it."
+  (let ((buf (plist-get session :buffer)))
+    (when (buffer-live-p buf)
+      (bp/agent-orchestration--terminal-input
+       buf bp/agent-orchestration-claude-stash-key)
+      (run-at-time
+       bp/agent-orchestration--submit-delay nil
+       #'bp/agent-orchestration--claude-paste-mail buf
+       (concat "$orca (/orca) agent mail arrived.\n\n"
+               (bp/agent-orchestration--format-messages messages)))
+      t)))
 
 (defun bp/agent-orchestration--paste (buf text)
   "Paste TEXT into BUF's terminal as one bracketed paste, then submit it.
@@ -3888,10 +3950,11 @@ most-recently-viewed order."
 
 (defun bp/agent-orchestration-deliver (id)
   "Hand ID's pending mail to its agent when safe; return the delivery method.
-The result is `delivered' for an idle-terminal paste, `queued' for Codex's
-native queue, and nil when mail remains unread.  Called both on arrival and from
-the hook path.  Idle delivery consumes before pasting to stay idempotent;
-native queueing consumes only after Codex acknowledges ownership."
+The result is `delivered' for a generic idle-terminal paste, `queued' for an
+agent-specific queue, and nil when mail remains unread.  Called both on arrival
+and from the hook path.  Terminal delivery consumes before its asynchronous
+keystrokes to stay idempotent; Codex consumes only after its CLI acknowledges
+ownership."
   (when bp/agent-orchestration-push-when-idle
     (let* ((session (bp/agent-sessions--session-for-id id))
            (buf (and session (plist-get session :buffer)))
@@ -3909,6 +3972,20 @@ native queueing consumes only after Codex acknowledges ownership."
         ;; fall through to terminal paste: preserving the human's draft is more
         ;; important than immediate delivery, and the unread record is safe.
         (when (bp/agent-orchestration--codex-queue session pending)
+          (bp/agent-orchestration--consume pending)
+          (bp/agent-sessions--refresh-if-visible)
+          'queued))
+       ((and pending
+             (bp/agent-orchestration--claude-session-p session)
+             (buffer-live-p buf)
+             (bp/agent-sessions--foreground-command buf)
+             (or (not (eq (plist-get session :status) 'running))
+                 (seq-some
+                  (lambda (message)
+                    (member (plist-get message :type)
+                            bp/agent-orchestration-actionable-message-types))
+                  pending)))
+        (when (bp/agent-orchestration--claude-queue session pending)
           (bp/agent-orchestration--consume pending)
           (bp/agent-sessions--refresh-if-visible)
           'queued))
@@ -4388,7 +4465,7 @@ Return the new terminal id."
                        (when (and (not revive-p) (not (equal current-id to)))
                          (push (format "routed to %s" current-id) details))
                        (pcase delivery
-                         ('queued (push "queued into Codex" details))
+                         ('queued (push "queued into agent" details))
                          ('delivered (push "delivered to idle agent" details)))
                        (if details
                            (format " (%s)" (string-join (nreverse details) "; "))
