@@ -72,6 +72,13 @@ question or replies to later mail delivered to a resting worker, and `status'
 is everything else.  A larger vocabulary would have to earn itself by changing
 what some command *does*, not just what a row says.")
 
+(defconst bp/agent-orchestration-actionable-message-types
+  '("done" "blocked" "question" "answer")
+  "Mail types important enough to steer a running Codex turn.
+Plain `status' mail waits for the recipient to become idle, unless actionable
+mail is queued with it, so progress chatter cannot repeatedly steer active
+work and earlier context still stays ordered with the actionable message.")
+
 (defvar bp/agent-orchestration--mail (make-hash-table :test 'equal)
   "Recipient terminal id -> list of message plists, oldest first.
 A message is (:id :from :from-key :from-label :to :to-key :type :subject :body
@@ -3463,17 +3470,20 @@ vocabulary, not ours, and a list here would be wrong within a release."
   :type '(alist :key-type symbol :value-type string))
 
 (defcustom bp/agent-orchestration-push-when-idle t
-  "When non-nil, mail for an agent that is resting is typed into its terminal.
-An orchestrator that is waiting collects its own mail through `emacs-agent
-wait', so this covers the other case: mail arriving for an agent that has
-finished its turn and would otherwise sit idle until the user prompted it.
-Mail is never pushed while the recipient has a running turn."
+  "When non-nil, automatically hand queued mail to a recipient agent.
+Mail for a resting agent is typed into its terminal.  Actionable mail for a
+running Codex agent is submitted through Codex's native queue; plain `status'
+mail alone waits until the recipient rests.  `emacs-agent wait' remains the
+explicit way for an agent to collect its own mail."
   :type 'boolean)
 
 (defconst bp/agent-orchestration--submit-delay 0.5
   "Seconds between pasting a message into a TUI and pressing Enter.
 The pasted block only becomes the TUI's composed input after it has processed
 it; submitting in the same breath submits an empty prompt.")
+
+(defconst bp/agent-orchestration--native-queue-timeout 5
+  "Seconds to wait for an agent's native queue command to acknowledge mail.")
 
 (defvar bp/agent-orchestration--brief-dir
   (expand-file-name "emacs-agent-briefs/" temporary-file-directory)
@@ -3665,6 +3675,70 @@ delivery to exactly the session an orchestrator is most likely to be watching.
          (bp/agent-sessions--foreground-command buf)
          t)))
 
+(defun bp/agent-orchestration--running-codex-p (session)
+  "Non-nil when SESSION is a running Codex conversation with a durable id."
+  (and (eq (plist-get session :status) 'running)
+       (equal (downcase (format "%s" (plist-get session :agent-type))) "codex")
+       (let ((sid (plist-get session :agent-session-id)))
+         (and (stringp sid) (not (string-empty-p sid))))))
+
+(defun bp/agent-orchestration--call-with-timeout (program args timeout)
+  "Run PROGRAM with ARGS, returning its exit status within TIMEOUT seconds.
+Process output goes to the current buffer.  Return nil after an error or
+timeout, inserting the diagnostic into that buffer.  Unlike `process-file',
+this cannot freeze Emacs indefinitely if a native queue client gets stuck."
+  (let (process timed-out)
+    (condition-case err
+        (unwind-protect
+            (progn
+              (setq process
+                    (make-process
+                     :name (generate-new-buffer-name "agent-sessions-native-queue")
+                     :buffer (current-buffer)
+                     :command (cons program args)
+                     :connection-type 'pipe
+                     :noquery t))
+              (let ((deadline (+ (float-time) timeout)))
+                (while (and (process-live-p process)
+                            (< (float-time) deadline))
+                  (accept-process-output
+                   process (min 0.1 (max 0 (- deadline (float-time))))))
+                (when (process-live-p process)
+                  (setq timed-out t)
+                  (delete-process process)))
+              (if timed-out
+                  (progn (insert (format "timed out after %ss" timeout)) nil)
+                (process-exit-status process)))
+          (when (and process (process-live-p process))
+            (delete-process process)))
+      (error
+       (insert (error-message-string err))
+       nil))))
+
+(defun bp/agent-orchestration--codex-queue (session messages)
+  "Queue MESSAGES into running Codex SESSION; return non-nil when accepted.
+Use Codex's session-aware command rather than writing into a busy terminal.
+Failure deliberately leaves the messages unread for idle delivery or an
+explicit inbox check."
+  (let ((program (executable-find "codex"))
+        (sid (plist-get session :agent-session-id)))
+    (when (and program sid)
+      (with-temp-buffer
+        (let* ((text
+                (concat "$orca (/orca) actionable agent mail arrived while you were running.\n\n"
+                        (bp/agent-orchestration--format-messages messages)))
+               (status
+                (bp/agent-orchestration--call-with-timeout
+                 program (list "queue" "--thread" sid "--message" text)
+                 bp/agent-orchestration--native-queue-timeout)))
+          (if (and (integerp status) (zerop status))
+              t
+            (message "agent-sessions: could not queue Codex mail for %s%s"
+                     sid
+                     (let ((detail (string-trim (buffer-string))))
+                       (if (string-empty-p detail) "" (format " (%s)" detail))))
+            nil))))))
+
 (defun bp/agent-orchestration--paste (buf text)
   "Paste TEXT into BUF's terminal as one bracketed paste, then submit it.
 Bracketed paste rather than plain input because a TUI submits on every newline
@@ -3814,22 +3888,35 @@ most-recently-viewed order."
       (message "Sent selected text to %s" (buffer-name buf)))))
 
 (defun bp/agent-orchestration-deliver (id)
-  "Type ID's pending mail into its terminal, when that is the right thing to do.
-Called both when a message arrives and from the hook path when a session comes
-to rest, since either can be the moment the other condition becomes true.
-Consuming before pasting is what keeps this idempotent across both callers."
+  "Hand ID's pending mail to its agent when safe; return the delivery method.
+The result is `delivered' for an idle-terminal paste, `queued' for Codex-native
+mid-turn queueing, and nil when mail remains unread.  Called both on arrival and
+from the hook path.  Idle delivery consumes before pasting to stay idempotent;
+native queueing consumes only after Codex acknowledges ownership."
   (when bp/agent-orchestration-push-when-idle
     (let* ((session (bp/agent-sessions--session-for-id id))
-           (buf (and session (plist-get session :buffer))))
-      (when (and session (buffer-live-p buf)
-                 (bp/agent-orchestration--receptive-p session)
-                 (bp/agent-orchestration--pending id))
-        (let ((pending (bp/agent-orchestration--pending id)))
-          (bp/agent-orchestration--consume pending)
-          (bp/agent-orchestration--paste
-           buf (concat "$orca (/orca) agent mail arrived while you were idle.\n\n"
-                       (bp/agent-orchestration--format-messages pending)))
-          (bp/agent-sessions--refresh-if-visible))))))
+           (buf (and session (plist-get session :buffer)))
+           (pending (and session (bp/agent-orchestration--pending id))))
+      (cond
+       ((and pending (buffer-live-p buf)
+             (bp/agent-orchestration--receptive-p session))
+        (bp/agent-orchestration--consume pending)
+        (bp/agent-orchestration--paste
+         buf (concat "$orca (/orca) agent mail arrived while you were idle.\n\n"
+                     (bp/agent-orchestration--format-messages pending)))
+        (bp/agent-sessions--refresh-if-visible)
+        'delivered)
+       ((and pending
+             (bp/agent-orchestration--running-codex-p session)
+             (seq-some
+              (lambda (message)
+                (member (plist-get message :type)
+                        bp/agent-orchestration-actionable-message-types))
+              pending)
+             (bp/agent-orchestration--codex-queue session pending))
+        (bp/agent-orchestration--consume pending)
+        (bp/agent-sessions--refresh-if-visible)
+        'queued)))))
 
 ;;;; The worker brief
 
@@ -4283,15 +4370,26 @@ Return the new terminal id."
                           (bp/agent-orchestration--revive-recipient
                            from-id sender recipient msg)))
                   (bp/agent-orchestration--store-message current-id msg)
-                  (if revive-p
-                      (bp/agent-orchestration--consume (list msg))
-                    (bp/agent-orchestration-deliver current-id))
-                  (bp/agent-sessions--refresh-if-visible)
-                  (concat (format "Sent %s to %s" type to)
-                          (cond (revive-p (format " (revived as %s)" current-id))
-                                ((not (equal current-id to))
-                                 (format " (routed to %s)" current-id))
-                                (t ""))))
+                  (let ((delivery
+                         (if revive-p
+                             (progn
+                               (bp/agent-orchestration--consume (list msg))
+                               'revived)
+                           (bp/agent-orchestration-deliver current-id))))
+                    (bp/agent-sessions--refresh-if-visible)
+                    (concat
+                     (format "Sent %s to %s" type to)
+                     (let ((details nil))
+                       (when revive-p
+                         (push (format "revived as %s" current-id) details))
+                       (when (and (not revive-p) (not (equal current-id to)))
+                         (push (format "routed to %s" current-id) details))
+                       (pcase delivery
+                         ('queued (push "queued into running Codex" details))
+                         ('delivered (push "delivered to idle agent" details)))
+                       (if details
+                           (format " (%s)" (string-join (nreverse details) "; "))
+                         "")))))
               (error (format "Could not send to recipient %s%s: %s"
                              to (if revive-p " while reviving it" "")
                              (error-message-string err)))))
