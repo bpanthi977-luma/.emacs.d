@@ -379,16 +379,21 @@ timeout behavior and incremental status output remain owned by their existing
 chokepoints.  `ask' uses the same composition for its coordinator-directed
 question flow.
 
-**Mail is pushed into an agent that is resting, and never into one mid-turn.**
-An orchestrator that is waiting collects its own mail; the case that needs help
-is mail arriving for an agent that has finished its turn, which would otherwise
-sit unread until the human prompted it. So delivery fires on the `Stop` hook
-(via `bp/agent-orchestration-deliver`) and on arrival, and is gated on two
-things. Its status is not `running', i.e. no turn is in progress. And something
-holds its terminal's foreground. A wait needs no separate polling state: it runs
-inside an agent turn, while the status gate already prevents terminal delivery,
-and both inbox reads and push delivery atomically consume mail on Emacs's single
-thread. Whichever gets a message first owns it; the other sees no pending mail.
+**Actionable mail steers running Codex sessions; idle mail is still pasted.**
+An hour-long turn is exactly when a question, answer, blocked report, or done
+report must not wait for `Stop'. When one of those types arrives for a running
+Codex conversation, delivery calls `codex queue --thread … --message …' with
+all pending mail in order. A plain `status' does not trigger steering, but an
+earlier status rides along with later actionable mail so delivery cannot reorder
+the inbox. Codex must acknowledge the queue before the messages are consumed;
+failure leaves them unread for `check' or the idle fallback. Other agents keep
+the idle behavior because typing into a busy TUI is not a portable queue API.
+
+Idle delivery fires on the `Stop` hook (via
+`bp/agent-orchestration-deliver`) and on arrival. It requires both a non-running
+status and something holding the terminal's foreground. Inbox reads, native
+queue acceptance, and idle delivery consume mail on Emacs's single thread, so
+whichever gets a message first owns it and the others see no pending mail.
 
 Both gates are phrased as exclusions on purpose. Enumerating the states
 that *are* fine has already failed once: the first version listed `idle' and
@@ -399,7 +404,7 @@ tidiness — with the shell's own prompt in front, a paste plus Enter is not
 reaching a TUI at all, it is the shell *running the message as a command line*,
 where the message was written by another agent. Mail for a bare shell stays
 queued for `emacs-agent check' instead.
-Delivery is one bracketed paste plus a delayed Enter: typed plainly, every
+Idle delivery is one bracketed paste plus a delayed Enter: typed plainly, every
 newline in the message would submit, firing the agent's turn on the first line.
 
 **Every rendered message identifies `$orca (/orca)' in its header.** The

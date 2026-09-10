@@ -163,10 +163,12 @@ emacs-agent wait --types done,blocked,question,answer --timeout 90
 - `emacs-agent check` reads mail without waiting. Unlike `wait`, its `--types`
   filters which messages are read; `check --peek` leaves them unread.
 
-Mail also reaches you when you are not waiting: if another agent writes while
-you are idle at your prompt, Emacs types the `$orca (/orca)` message into your
-terminal and submits it, so you wake up with it as new input. Read it and
-continue the coordination or conversation.
+Mail also reaches you when you are not waiting. Questions, answers, blocked
+reports, and done reports are queued into a running Codex conversation and can
+steer it at a safe boundary; plain status updates do not steer on their own.
+When you are idle, Emacs types any remaining `$orca (/orca)` mail into your
+terminal and submits it as new input. Read it and continue the coordination or
+conversation.
 
 ## 5. Answer questions, then synthesize
 
