@@ -379,21 +379,25 @@ timeout behavior and incremental status output remain owned by their existing
 chokepoints.  `ask' uses the same composition for its coordinator-directed
 question flow.
 
-**Actionable mail steers running Codex sessions; idle mail is still pasted.**
+**Codex mail uses Codex's native queue, never its terminal composer.**
 An hour-long turn is exactly when a question, answer, blocked report, or done
 report must not wait for `Stop'. When one of those types arrives for a running
 Codex conversation, delivery calls `codex queue --thread … --message …' with
 all pending mail in order. A plain `status' does not trigger steering, but an
 earlier status rides along with later actionable mail so delivery cannot reorder
 the inbox. Codex must acknowledge the queue before the messages are consumed;
-failure leaves them unread for `check' or the idle fallback. Other agents keep
-the idle behavior because typing into a busy TUI is not a portable queue API.
+failure leaves them unread for `check' or a later retry. Resting Codex sessions
+use the same native queue: terminal paste would share the human's composer, so
+a half-written human prompt could otherwise be submitted as part of agent mail.
+Other agents keep the idle behavior because typing into a busy TUI is not a
+portable queue API.
 
 Idle delivery fires on the `Stop` hook (via
 `bp/agent-orchestration-deliver`) and on arrival. It requires both a non-running
-status and something holding the terminal's foreground. Inbox reads, native
-queue acceptance, and idle delivery consume mail on Emacs's single thread, so
-whichever gets a message first owns it and the others see no pending mail.
+status and something holding the terminal's foreground, and is only the fallback
+for agents without a native queue. Inbox reads, native queue acceptance, and
+idle delivery consume mail on Emacs's single thread, so whichever gets a message
+first owns it and the others see no pending mail.
 
 Both gates are phrased as exclusions on purpose. Enumerating the states
 that *are* fine has already failed once: the first version listed `idle' and

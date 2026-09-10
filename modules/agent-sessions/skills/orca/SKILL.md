@@ -35,11 +35,12 @@ so it cannot drift from the tool it documents. Load it now, then follow it:
 Read whichever applies before running any other `emacs-agent` verb. If both
 apply (you are a worker that needs to spawn workers of its own), read both.
 
-Agent mail is persisted immediately. Questions, answers, blocked reports, and
-done reports are queued natively into a running Codex conversation; plain
-status updates wait unless later actionable mail carries them along. Other
-agent types receive pending mail when idle. After sending, choose based on what
-the current turn needs:
+Agent mail is persisted immediately. Codex receives it through its native
+session queue, separate from any human draft in the terminal composer.
+Questions, answers, blocked reports, and done reports can steer a running Codex
+conversation; plain status updates wait unless later actionable mail carries
+them along. Other agent types receive pending mail when idle. After sending,
+choose based on what the current turn needs:
 
 - If you need the other agent's result before responding, use
   `emacs-agent wait`. It polls the mailbox and returns the message as command

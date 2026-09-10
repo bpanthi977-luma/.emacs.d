@@ -166,9 +166,10 @@ emacs-agent wait --types done,blocked,question,answer --timeout 90
 Mail also reaches you when you are not waiting. Questions, answers, blocked
 reports, and done reports are queued into a running Codex conversation and can
 steer it at a safe boundary; plain status updates do not steer on their own.
-When you are idle, Emacs types any remaining `$orca (/orca)` mail into your
-terminal and submits it as new input. Read it and continue the coordination or
-conversation.
+Codex mail always uses its native session queue, so it cannot absorb a human's
+partially written terminal prompt. When another agent type is idle, Emacs types
+pending `$orca (/orca)` mail into its terminal and submits it as new input. Read
+it and continue the coordination or conversation.
 
 ## 5. Answer questions, then synthesize
 
