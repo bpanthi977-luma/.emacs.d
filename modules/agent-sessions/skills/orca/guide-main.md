@@ -164,12 +164,13 @@ emacs-agent wait --types done,blocked,question,answer --timeout 90
   filters which messages are read; `check --peek` leaves them unread.
 
 Mail also reaches you when you are not waiting. Questions, answers, blocked
-reports, and done reports are queued into a running Codex conversation and can
-steer it at a safe boundary; plain status updates do not steer on their own.
-Codex mail always uses its native session queue, so it cannot absorb a human's
-partially written terminal prompt. When another agent type is idle, Emacs types
-pending `$orca (/orca)` mail into its terminal and submits it as new input. Read
-it and continue the coordination or conversation.
+reports, and done reports are queued into a running Claude or Codex conversation
+and can steer it at a safe boundary; plain status updates do not steer on their
+own. Codex uses its native session queue. Claude stashes and restores any
+partially written human prompt around its queue-submit action. When another
+agent type is idle, Emacs types pending `$orca (/orca)` mail into its terminal
+and submits it as new input. Read it and continue the coordination or
+conversation.
 
 ## 5. Answer questions, then synthesize
 

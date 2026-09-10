@@ -35,23 +35,24 @@ so it cannot drift from the tool it documents. Load it now, then follow it:
 Read whichever applies before running any other `emacs-agent` verb. If both
 apply (you are a worker that needs to spawn workers of its own), read both.
 
-Agent mail is persisted immediately. Codex receives it through its native
-session queue, separate from any human draft in the terminal composer.
-Questions, answers, blocked reports, and done reports can steer a running Codex
-conversation; plain status updates wait unless later actionable mail carries
-them along. Other agent types receive pending mail when idle. After sending,
-choose based on what the current turn needs:
+Agent mail is persisted immediately. Codex uses its native session queue;
+Claude stashes and restores any human draft around its queue-submit action.
+Questions, answers, blocked reports, and done reports can steer a running
+Claude or Codex conversation; plain status updates wait unless later actionable
+mail carries them along. Other agent types receive pending mail when idle.
+After sending, choose based on what the current turn needs:
 
 - If you need the other agent's result before responding, use
   `emacs-agent wait`. It polls the mailbox and returns the message as command
   output; it does not depend on idle-terminal delivery.
-- Otherwise, yield normally instead of polling. Codex can receive actionable
-  mail at a safe boundary during its active turn; idle delivery starts a new
-  turn for pending mail that was not natively queued.
+- Otherwise, yield normally instead of polling. Claude and Codex can receive
+  actionable mail at a safe boundary during an active turn; idle delivery
+  starts a new turn for pending mail that was not queued earlier.
 
 You may continue unrelated work in the current turn, but actionable mail may
-steer a running Codex recipient. A worker that sent a question remains blocked
-until you collect the answer with `wait` or Codex applies it as queued input.
+steer a running Claude or Codex recipient. A worker that sent a question remains
+blocked until you collect the answer with `wait` or the agent applies it as
+queued input.
 
 For a conversational request whose answer is needed immediately, use
 `emacs-agent send-and-wait` instead of separate `send` and `wait` calls. It
