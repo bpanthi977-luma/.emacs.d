@@ -483,10 +483,9 @@ the body names the agent type, state, and its terminal title (task summary)."
         ;; This event is where a session's durable identity becomes known, so
         ;; it is also where mail stored for it under that identity — by a
         ;; previous Emacs, or before this terminal had an agent id — is picked
-        ;; up.  Then deliver: mail that arrived while the session was mid-turn
-        ;; had nowhere to go, because pasting into a running TUI would land in
-        ;; the middle of its turn, and this event is the moment that stops
-        ;; being true.
+        ;; up.  Then deliver: Codex has a session-aware native queue, while an
+        ;; agent without one may have been waiting for this event to make a
+        ;; terminal paste safe.
         (bp/agent-orchestration--hydrate session-id)
         (bp/agent-orchestration-deliver session-id)))
     (bp/agent-sessions--refresh-if-visible))
@@ -3471,10 +3470,11 @@ vocabulary, not ours, and a list here would be wrong within a release."
 
 (defcustom bp/agent-orchestration-push-when-idle t
   "When non-nil, automatically hand queued mail to a recipient agent.
-Mail for a resting agent is typed into its terminal.  Actionable mail for a
-running Codex agent is submitted through Codex's native queue; plain `status'
-mail alone waits until the recipient rests.  `emacs-agent wait' remains the
-explicit way for an agent to collect its own mail."
+Codex mail uses its native session queue, whether the conversation is running
+or resting, so it never shares the human's terminal composer.  Plain `status'
+mail alone waits while Codex is running.  Resting agents without a native queue
+receive mail through their terminal.  `emacs-agent wait' remains the explicit
+way for an agent to collect its own mail."
   :type 'boolean)
 
 (defconst bp/agent-orchestration--submit-delay 0.5
@@ -3675,10 +3675,9 @@ delivery to exactly the session an orchestrator is most likely to be watching.
          (bp/agent-sessions--foreground-command buf)
          t)))
 
-(defun bp/agent-orchestration--running-codex-p (session)
-  "Non-nil when SESSION is a running Codex conversation with a durable id."
-  (and (eq (plist-get session :status) 'running)
-       (equal (downcase (format "%s" (plist-get session :agent-type))) "codex")
+(defun bp/agent-orchestration--codex-session-p (session)
+  "Non-nil when SESSION is a Codex conversation with a durable id."
+  (and (equal (downcase (format "%s" (plist-get session :agent-type))) "codex")
        (let ((sid (plist-get session :agent-session-id)))
          (and (stringp sid) (not (string-empty-p sid))))))
 
@@ -3725,7 +3724,7 @@ explicit inbox check."
     (when (and program sid)
       (with-temp-buffer
         (let* ((text
-                (concat "$orca (/orca) actionable agent mail arrived while you were running.\n\n"
+                (concat "$orca (/orca) agent mail arrived.\n\n"
                         (bp/agent-orchestration--format-messages messages)))
                (status
                 (bp/agent-orchestration--call-with-timeout
@@ -3889,15 +3888,30 @@ most-recently-viewed order."
 
 (defun bp/agent-orchestration-deliver (id)
   "Hand ID's pending mail to its agent when safe; return the delivery method.
-The result is `delivered' for an idle-terminal paste, `queued' for Codex-native
-mid-turn queueing, and nil when mail remains unread.  Called both on arrival and
-from the hook path.  Idle delivery consumes before pasting to stay idempotent;
+The result is `delivered' for an idle-terminal paste, `queued' for Codex's
+native queue, and nil when mail remains unread.  Called both on arrival and from
+the hook path.  Idle delivery consumes before pasting to stay idempotent;
 native queueing consumes only after Codex acknowledges ownership."
   (when bp/agent-orchestration-push-when-idle
     (let* ((session (bp/agent-sessions--session-for-id id))
            (buf (and session (plist-get session :buffer)))
            (pending (and session (bp/agent-orchestration--pending id))))
       (cond
+       ((and pending
+             (bp/agent-orchestration--codex-session-p session)
+             (or (not (eq (plist-get session :status) 'running))
+                 (seq-some
+                  (lambda (message)
+                    (member (plist-get message :type)
+                            bp/agent-orchestration-actionable-message-types))
+                  pending)))
+        ;; This branch owns Codex delivery even when the command fails.  Do not
+        ;; fall through to terminal paste: preserving the human's draft is more
+        ;; important than immediate delivery, and the unread record is safe.
+        (when (bp/agent-orchestration--codex-queue session pending)
+          (bp/agent-orchestration--consume pending)
+          (bp/agent-sessions--refresh-if-visible)
+          'queued))
        ((and pending (buffer-live-p buf)
              (bp/agent-orchestration--receptive-p session))
         (bp/agent-orchestration--consume pending)
@@ -3905,18 +3919,7 @@ native queueing consumes only after Codex acknowledges ownership."
          buf (concat "$orca (/orca) agent mail arrived while you were idle.\n\n"
                      (bp/agent-orchestration--format-messages pending)))
         (bp/agent-sessions--refresh-if-visible)
-        'delivered)
-       ((and pending
-             (bp/agent-orchestration--running-codex-p session)
-             (seq-some
-              (lambda (message)
-                (member (plist-get message :type)
-                        bp/agent-orchestration-actionable-message-types))
-              pending)
-             (bp/agent-orchestration--codex-queue session pending))
-        (bp/agent-orchestration--consume pending)
-        (bp/agent-sessions--refresh-if-visible)
-        'queued)))))
+        'delivered)))))
 
 ;;;; The worker brief
 
@@ -4385,7 +4388,7 @@ Return the new terminal id."
                        (when (and (not revive-p) (not (equal current-id to)))
                          (push (format "routed to %s" current-id) details))
                        (pcase delivery
-                         ('queued (push "queued into running Codex" details))
+                         ('queued (push "queued into Codex" details))
                          ('delivered (push "delivered to idle agent" details)))
                        (if details
                            (format " (%s)" (string-join (nreverse details) "; "))
