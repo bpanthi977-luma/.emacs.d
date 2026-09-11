@@ -187,6 +187,69 @@
       (should (equal (list message) consumed))
       (should-not pasted))))
 
+(ert-deftest bp/agent-orchestration-interrupted-codex-empty-prompt-delivers-directly ()
+  (let* ((id "terminal")
+         (buffer (generate-new-buffer " *codex-interrupted-delivery-test*"))
+         (message (bp/agent-orchestration-test--message "answer" "decision"))
+         ;; Codex does not fire Stop for an interrupted turn, so this stale
+         ;; status is the live failure mode this regression covers.
+         (session (list :status 'running :agent-type "codex"
+                        :agent-session-id "thread" :buffer buffer))
+         (bp/agent-orchestration--mail (make-hash-table :test 'equal))
+         queued consumed pasted)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert "■ Conversation interrupted - tell the model what to do differently.\n"
+                    "\n› Ask Codex to do anything\n\n"
+                    "  gpt-5.6-sol medium · Context 31% used"))
+          (puthash id (list message) bp/agent-orchestration--mail)
+          (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+                     (lambda (_) session))
+                    ((symbol-function 'bp/agent-orchestration--codex-queue)
+                     (lambda (_ messages) (setq queued messages) t))
+                    ((symbol-function 'bp/agent-orchestration--paste)
+                     (lambda (_ text) (setq pasted text)))
+                    ((symbol-function 'bp/agent-orchestration--consume)
+                     (lambda (messages) (setq consumed messages)))
+                    ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                     #'ignore))
+            (should (eq 'delivered (bp/agent-orchestration-deliver id)))
+            (should (equal (list message) consumed))
+            (should (string-match-p "Subject: decision" pasted))
+            (should-not queued)))
+      (kill-buffer buffer))))
+
+(ert-deftest bp/agent-orchestration-codex-draft-still-uses-native-queue ()
+  (let* ((id "terminal")
+         (buffer (generate-new-buffer " *codex-draft-delivery-test*"))
+         (message (bp/agent-orchestration-test--message "answer" "decision"))
+         (session (list :status 'stopped :agent-type "codex"
+                        :agent-session-id "thread" :buffer buffer))
+         (bp/agent-orchestration--mail (make-hash-table :test 'equal))
+         queued consumed pasted)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert "› Keep this human draft intact\n\n"
+                    "  gpt-5.6-sol medium · Context 31% used"))
+          (puthash id (list message) bp/agent-orchestration--mail)
+          (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+                     (lambda (_) session))
+                    ((symbol-function 'bp/agent-orchestration--codex-queue)
+                     (lambda (_ messages) (setq queued messages) t))
+                    ((symbol-function 'bp/agent-orchestration--paste)
+                     (lambda (&rest _) (setq pasted t)))
+                    ((symbol-function 'bp/agent-orchestration--consume)
+                     (lambda (messages) (setq consumed messages)))
+                    ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                     #'ignore))
+            (should (eq 'queued (bp/agent-orchestration-deliver id)))
+            (should (equal (list message) queued))
+            (should (equal (list message) consumed))
+            (should-not pasted)))
+      (kill-buffer buffer))))
+
 (ert-deftest bp/agent-orchestration-native-codex-queue-uses-durable-thread-id ()
   (let ((session (list :agent-session-id "thread-uuid"))
         (message (bp/agent-orchestration-test--message "answer" "result"))

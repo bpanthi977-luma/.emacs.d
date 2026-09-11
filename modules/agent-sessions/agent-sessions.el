@@ -3498,6 +3498,16 @@ it; submitting in the same breath submits an empty prompt.")
 (defconst bp/agent-orchestration--native-queue-timeout 5
   "Seconds to wait for an agent's native queue command to acknowledge mail.")
 
+(defcustom bp/agent-orchestration-codex-empty-prompt-regexp
+  "^›[[:blank:]]+Ask Codex to do anything[[:blank:]]*$"
+  "Regexp matching Codex's empty idle composer.
+This is the one terminal state where delivering mail through the composer is
+safe even when the last hook still says the session is running.  In
+particular, Codex does not emit a Stop hook when a turn is interrupted, and
+its native queue deliberately leaves messages pending while the thread has
+that internal state."
+  :type 'regexp)
+
 (defvar bp/agent-orchestration--brief-dir
   (expand-file-name "emacs-agent-briefs/" temporary-file-directory)
   "Where task briefs are written.  Kept after the worker starts, on purpose:
@@ -3693,6 +3703,21 @@ delivery to exactly the session an orchestrator is most likely to be watching.
   (and (equal (downcase (format "%s" (plist-get session :agent-type))) "codex")
        (let ((sid (plist-get session :agent-session-id)))
          (and (stringp sid) (not (string-empty-p sid))))))
+
+(defun bp/agent-orchestration--codex-empty-prompt-p (session)
+  "Non-nil when SESSION visibly has Codex's empty idle composer.
+Only inspect the bottom four buffer lines.  An older prompt in terminal
+scrollback must not make a running conversation look receptive, and a nonempty
+human draft deliberately does not match."
+  (let ((buf (plist-get session :buffer)))
+    (and (buffer-live-p buf)
+         (with-current-buffer buf
+           (save-restriction
+             (widen)
+             (goto-char (point-max))
+             (when (re-search-backward
+                    bp/agent-orchestration-codex-empty-prompt-regexp nil t)
+               (<= (count-lines (line-beginning-position) (point-max)) 4)))))))
 
 (defun bp/agent-orchestration--claude-session-p (session)
   "Non-nil when SESSION is a Claude conversation."
@@ -3960,6 +3985,20 @@ ownership."
            (buf (and session (plist-get session :buffer)))
            (pending (and session (bp/agent-orchestration--pending id))))
       (cond
+       ;; An interrupted Codex turn does not fire Stop, so our hook status can
+       ;; still say `running' while the TUI is visibly back at its empty prompt.
+       ;; Codex accepts native queue writes in that state but intentionally does
+       ;; not dispatch them.  Bypass the native queue only for the empty
+       ;; composer: a human draft must remain untouched.
+       ((and pending
+             (bp/agent-orchestration--codex-session-p session)
+             (bp/agent-orchestration--codex-empty-prompt-p session))
+        (bp/agent-orchestration--consume pending)
+        (bp/agent-orchestration--paste
+         buf (concat "$orca (/orca) agent mail arrived while you were idle.\n\n"
+                     (bp/agent-orchestration--format-messages pending)))
+        (bp/agent-sessions--refresh-if-visible)
+        'delivered)
        ((and pending
              (bp/agent-orchestration--codex-session-p session)
              (or (not (eq (plist-get session :status) 'running))
