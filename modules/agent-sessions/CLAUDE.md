@@ -544,8 +544,10 @@ onto `--row-status` like every other row, which is what makes `N`/`P` walk to
 them; see that variable's docstring for why status is recorded at render time
 rather than looked up.
 
-**Reading clears it, however the file was opened.** `RET` is the common path,
-but the focus hook that already clears the `u` mark also matches the selected
+**Reading clears it, however the file was opened.** `RET` is the common path;
+`d` opens the newest commit touching the file in a Magit revision buffer
+filtered to that path, and clears it only after the diff opens successfully.
+The focus hook that already clears the `u` mark also matches the selected
 window's `buffer-file-truename` against the shared paths, so a file shared by
 one path and opened by another still counts as read. That hook runs at every
 buffer switch, so the check is a set lookup and is gated on the database being
