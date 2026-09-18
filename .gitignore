@@ -28,3 +28,4 @@
 /agent-sessions.db-shm
 /agent-sessions.db-wal
 /forks/
+/modules/tilt-dashboard/
