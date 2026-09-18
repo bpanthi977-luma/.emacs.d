@@ -67,11 +67,14 @@ Intended as :around advice for `eat--adjust-process-window-size'."
         (bp/eat--coalesce-after-resize))
       (funcall fn process windows))))
 
+(define-prefix-command 'bp/agent-prefix-map)
+(define-key bp/global-prefix-map (kbd "a") #'bp/agent-prefix-map)
+
 (use-package agent-sessions
   :load-path "modules/agent-sessions"
-  :bind (("M-A s" . bp/agent-sessions-send-region)
-         :map bp/global-prefix-map
-         (("a" . bp/agent-sessions-list)))
+  :bind (:map bp/agent-prefix-map
+              ("a" . bp/agent-sessions-list)
+              ("s" . bp/agent-sessions-send-region))
   :defer nil
   :config
   (setf bp/agent-sessions-show-all-worktrees t)
