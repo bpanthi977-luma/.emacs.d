@@ -2124,6 +2124,30 @@ restoration is not competing with whatever DISPLAY-FN does to the windows."
          (bp/agent-sessions--refresh-if-visible))
        (funcall display-fn (find-file-noselect path))))))
 
+(defun bp/agent-sessions-show-file-diff ()
+  "Show the latest committed diff for the shared file at point, then mark it read.
+The Magit revision buffer is limited to that file.  If the file is outside a
+Git repository or has no committed history, leave its unread state unchanged."
+  (interactive)
+  (pcase (bp/agent-sessions--file-at-point)
+    (`(,_session ,path ,_file)
+     (let* ((root (magit-toplevel (file-name-directory path)))
+            (relative (and root (file-relative-name path root)))
+            (default-directory (or root default-directory))
+            (commit (and root
+                         (magit-git-string "log" "-1" "--format=%H"
+                                           "--follow" "--" relative))))
+       (unless root
+         (user-error "File is not in a Git repository"))
+       (unless commit
+         (user-error "File has no committed diff"))
+       (magit-show-commit commit (car (magit-show-commit--arguments))
+                          (list relative))
+       (when (bp/agent-sessions--set-visited
+              (lambda (file) (equal (plist-get file :path) path)) t)
+         (bp/agent-sessions--refresh-if-visible))))
+    (_ (message "No shared file at point."))))
+
 (defface bp/agent-session-file-unvisited
   '((t :inherit bp/agent-session-needs-attention))
   "Face for a shared file not opened since the agent last shared it.
@@ -4647,6 +4671,7 @@ out one that is already taken — or hide one that just became available."
             worktrees "")))))))
 
 (define-key bp/agent-sessions-mode-map (kbd "RET") #'bp/agent-sessions-jump)
+(define-key bp/agent-sessions-mode-map (kbd "d") #'bp/agent-sessions-show-file-diff)
 (define-key bp/agent-sessions-mode-map (kbd "v") #'bp/agent-sessions-display)
 (define-key bp/agent-sessions-mode-map (kbd "V") #'bp/agent-sessions-display-or-browse)
 (define-key bp/agent-sessions-mode-map (kbd "k") #'bp/agent-sessions-kill)
