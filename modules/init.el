@@ -19,3 +19,4 @@
 (load* "dired.el")
 (load* "eat.el")
 (load* "agent-session-config.el")
+(load* "tilt-dashboard-config.el")
