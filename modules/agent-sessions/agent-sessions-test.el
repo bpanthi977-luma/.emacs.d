@@ -319,5 +319,85 @@
       (should-not shown)
       (should-not visited))))
 
+(defmacro bp/agent-sessions-test--with-temp-db (&rest body)
+  "Run BODY with an isolated agent-sessions database."
+  (declare (indent 0) (debug t))
+  `(let* ((db-file (make-temp-file "agent-sessions-test-"))
+          (bp/agent-sessions-db-file db-file)
+          (bp/agent-sessions--db nil)
+          (bp/agent-sessions--shared-links nil))
+     (unwind-protect
+         (progn ,@body)
+       (when (sqlitep bp/agent-sessions--db)
+         (sqlite-close bp/agent-sessions--db))
+       (dolist (path (list db-file (concat db-file "-wal")
+                           (concat db-file "-shm")))
+         (when (file-exists-p path)
+           (delete-file path))))))
+
+(ert-deftest bp/agent-sessions-shared-link-is-idempotent-and-current-per-kind ()
+  (bp/agent-sessions-test--with-temp-db
+    (let* ((session (list :agent-session-id "thread-1"))
+           (first (bp/agent-sessions--share-link
+                   session "linear" "https://linear.app/issue/ABC-1" "ABC-1"))
+           (shared-at (plist-get first :shared-at)))
+      (should-not (plist-get first :visited-at))
+      (should (bp/agent-sessions--set-link-visited
+               (lambda (link) (equal (plist-get link :kind) "linear")) t))
+      (let ((same (bp/agent-sessions--share-link
+                   session "linear" "https://linear.app/issue/ABC-1" "ABC-1")))
+        (should (plist-get same :visited-at))
+        (should (= shared-at (plist-get same :shared-at))))
+      (let ((changed (bp/agent-sessions--share-link
+                      session "linear" "https://linear.app/issue/ABC-2" "ABC-2")))
+        (should-not (plist-get changed :visited-at))
+        (should (= shared-at (plist-get changed :shared-at)))
+        (should (equal "https://linear.app/issue/ABC-2"
+                       (plist-get changed :url))))
+      (should (equal '((1))
+                     (sqlite-select
+                      (bp/agent-sessions--db)
+                      "SELECT COUNT(*) FROM shared_links
+                        WHERE owner_kind = 'session'
+                          AND owner_key = 'thread-1'
+                          AND link_kind = 'linear'"))))))
+
+(ert-deftest bp/agent-sessions-share-link-validates-kind-and-url ()
+  (let ((session (list :agent-session-id "thread-1"))
+        refreshed)
+    (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+               (lambda (_) session))
+              ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+               (lambda () (setq refreshed t))))
+      (should (string-prefix-p
+               "Unknown link kind"
+               (bp/agent-sessions-share-link
+                "terminal" "ticket" "https://example.com/1")))
+      (should (string-prefix-p
+               "Invalid link URL"
+               (bp/agent-sessions-share-link
+                "terminal" "linear" "file:///tmp/issue")))
+      (should-not refreshed))))
+
+(ert-deftest bp/agent-sessions-open-link-marks-read-before-browsing ()
+  (let* ((link (list :kind "pr" :url "https://github.com/org/repo/pull/1"))
+         events)
+    (cl-letf (((symbol-function 'bp/agent-sessions--link-at-point)
+               (lambda () (list 'session "pr" link)))
+              ((symbol-function 'bp/agent-sessions--set-link-visited)
+               (lambda (match-fn visitedp)
+                 (push (list 'visited (funcall match-fn link) visitedp) events)
+                 t))
+              ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+               (lambda () (push '(refresh) events)))
+              ((symbol-function 'browse-url)
+               (lambda (url) (push (list 'browse url) events))))
+      (bp/agent-sessions--open-link-at-point)
+      (should
+       (equal (nreverse events)
+              '((visited t t)
+                (refresh)
+                (browse "https://github.com/org/repo/pull/1")))))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
