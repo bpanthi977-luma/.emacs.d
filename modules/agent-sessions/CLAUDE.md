@@ -8,7 +8,7 @@ code says *what* it does; this file records *why*, so the intent survives edits.
 - `agent-sessions.el` — everything; `agent-sessions-codex-hook.sh` — Codex event
   forwarder. The Claude forwarder lives outside the repo
   (`~/.orca/agent-hooks/claude-hook.sh`, wired via `~/.claude/settings.json`).
-- `bin/` — commands agents run *inside* a session terminal: `emacs-share-file`
+- `bin/` — commands agents run *inside* a session terminal: `emacs-share`
   (see "Shared files") and `emacs-agent` (see "Orchestration"). On every session
   terminal's PATH.
 - `skills/orca/` — the `/orca` skill an agent loads to learn orchestration, and
@@ -247,7 +247,7 @@ per-refresh work off the git path.
 
 `bin/emacs-agent` lets an agent start another agent in another worktree and
 block until it reports. Its verbs are spawn, send, send-and-wait, done, ask,
-check, wait, list, and worktrees. It reaches Emacs the way `emacs-share-file`
+check, wait, list, and worktrees. It reaches Emacs the way `emacs-share`
 does, and returns its failures as the printed value for the same reason.
 
 **Emacs owns only what an agent cannot do for itself.** There are no task rows,
@@ -498,24 +498,31 @@ design:
   safe because it never touches parentage detection. Keep it that side of the
   line.
 
-## Shared files — an inbox, not a file manager
+## Shared files and work links — an inbox, not a file manager
 
-`emacs-share-file FILE ["why"]` lets an agent hand the user something to read;
+`emacs-share file FILE ["why"]` lets an agent hand the user something to read;
 it lands as a fourth level of the tree, under the agent that sent it, and stays
 highlighted until opened. It exists because a terminal is a bad inbox: "look at
 /tmp/plan.md" scrolls away, and is only seen at all if you are already in that
 buffer.
 
+`emacs-share link linear|pr URL [LABEL]` uses the same UI
+for the external work that explains a session. A session has one current link
+per kind, so an issue workflow can register Linear when it starts and fill in
+the PR later without accumulating duplicates. Exact re-registration is a true
+no-op and preserves the read state; changing a kind's URL or label marks it
+unread again while keeping its position.
+
 **It is attached to the session, by the session's most durable identity.** The
 key is `--session-note-keys` reused verbatim — the agent's own session id when
 it has one, the buffer name otherwise, reading both and collapsing onto the
-first on write. So renaming a terminal keeps its files, a file shared into a
+first on write. So renaming a terminal keeps its attachments, one added to a
 bare shell survives `claude` starting in it, and a session brought back with
-`R` comes back with its files. The *caller* passes the terminal id, because
-that is what the shell environment has; resolving it to a session happens in
-`bp/agent-sessions-share-file`, the same split the hook path makes. Like a
-note, a row outlives the session that owned it and nothing prunes it — the same
-trade, for the same reason.
+`R` gets them back. The *caller* passes the terminal id, because that is what
+the shell environment has; `bp/agent-sessions-share-file` and
+`bp/agent-sessions-share-link` resolve it to a session, the same split the hook
+path makes. Like a note, a row outlives the session that owned it and nothing
+prunes it — the same trade, for the same reason.
 
 **Re-sharing a path means "I changed it, look again", not "add it twice".**
 This is why the table carries two timestamps. `visited_at` is cleared so the
@@ -537,12 +544,12 @@ item out of it must not be able to destroy the thing it points at. There is
 deliberately no prefix argument that deletes the file — if that is ever added,
 it is a different key, not a modifier on this one.
 
-**An unopened file borrows the needs-attention face, deliberately.** An unread
-file and a waiting session are the same claim on the user's attention, and the
-dashboard should not make anyone learn two highlights for it. The rows push
-onto `--row-status` like every other row, which is what makes `N`/`P` walk to
-them; see that variable's docstring for why status is recorded at render time
-rather than looked up.
+**An unopened attachment borrows the needs-attention face, deliberately.** An
+unread file or link and a waiting session are the same claim on the user's
+attention, and the dashboard should not make anyone learn two highlights for
+it. The rows push onto `--row-status` like every other row, which is what makes
+`N`/`P` walk to them; see that variable's docstring for why status is recorded
+at render time rather than looked up.
 
 **Reading clears it, however the file was opened.** `RET` is the common path;
 `d` opens the newest commit touching the file in a Magit revision buffer
@@ -555,18 +562,21 @@ already open — which it is whenever a terminal has ever existed, and is not in
 an Emacs with no sessions.
 
 **`u` toggles here, where on a session it sets.** Both directions are wanted
-for a file — lighting one up to re-read, and dismissing one you have decided
-not to read at all — and a file row, unlike a session, has somewhere to read
-its current state back from.
+for an attachment — lighting one up to re-read, and dismissing one you have
+decided not to read at all — and an attachment row, unlike a session, has
+somewhere to read its current state back from. `RET` and `v` browse an external
+link, and `k` detaches it without affecting the remote issue or pull request.
 
-**The script fails loudly, unlike the hook forwarders.** Those exit 0 into the
+**The sharing command fails loudly, unlike the hook forwarders.** Those exit 0 into the
 void by design: a hook firing into a dead Emacs must not break the agent's
 turn. This one is the opposite — an agent that believes it has handed over a
 file when it has not will go on to tell the user about it — so a missing file,
 a terminal outside Emacs, an unreachable server and a refusal from Emacs each
 print to stderr and exit non-zero. `bp/agent-sessions-share-file` therefore
 *returns* its failures as strings rather than signalling: emacsclient's printed
-value is the only channel back to the agent.
+value is the only channel back to the agent. `emacs-share-file` is a symlink to
+`emacs-share` that selects file mode implicitly, so already-running agents keep
+working while new instructions use the unified command.
 
 **PATH injection is additive by construction.** The terminal env sets
 `PATH=<our bin>:<the PATH the terminal was going to inherit anyway>`, read from

@@ -48,7 +48,7 @@ Rules:
   half-finished edits along with yours.
 - `--summary` is read first and often only. Lead with what changed and whether
   it works; put detail in a file and pass `--report` if it is long.
-- `emacs-share-file FILE "why"` hands a file to the *human* in their dashboard.
+- `emacs-share file FILE "why"` hands a file to the *human* in their dashboard.
   That is not a substitute for reporting `done` to your coordinator.
 
 The human can also talk to you directly in this terminal. If they redirect you,
