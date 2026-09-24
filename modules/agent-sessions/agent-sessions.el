@@ -31,8 +31,8 @@
 (defconst bp/agent-sessions--bin-dir
   (expand-file-name "bin" bp/agent-sessions--dir)
   "Directory of the commands an agent may run from inside a session terminal.
-Placed on the PATH of every session terminal, so `emacs-share-file' is simply
-there — nothing for the user to install and nothing for the agent to locate.")
+Placed on the PATH of every session terminal, so `emacs-share' is simply there
+— nothing for the user to install and nothing for the agent to locate.")
 
 (defvar bp/agent-sessions--extra-terminal-env nil
   "Extra `VAR=VALUE' strings to inject into the next terminal created.
@@ -304,7 +304,7 @@ real needs-attention is: by looking at the session.")
 
 (defun bp/agent-sessions--eat-advice (orig-fun program arg display-fn)
   "Give eat sessions the same id injection/registration as vterm.
-Injects EMACS_AGENT_SESSION_ID and the shared-file command's directory via
+Injects EMACS_AGENT_SESSION_ID and the agent command directory via
 `process-environment' (which `eat-exec' inherits when it spawns the shell) and
 registers the resulting buffer."
   (let* ((id (format "%d-%d" (emacs-pid) (cl-incf bp/agent-session-counter)))
@@ -881,6 +881,7 @@ indentation conveys the relationship."
       (bp/agent-sessions--insert-note
        (bp/agent-sessions--session-note-keys session)
        (concat "    " indent "    "))
+      (bp/agent-sessions--insert-links session (concat "    " indent "    "))
       (bp/agent-sessions--insert-files session (concat "    " indent "    ")))))
 
 (defun bp/agent-sessions--insert-entries (entries)
@@ -1177,7 +1178,22 @@ order (e.g. for buffers with no creation stamp)."
        shared_at  INTEGER NOT NULL,
        updated_at INTEGER NOT NULL,
        visited_at INTEGER,
-       PRIMARY KEY (kind, key, path))")
+       PRIMARY KEY (kind, key, path))"
+
+    ;; External work items an agent wants to keep visible beside its shared
+    ;; files.  There is one current URL per link_kind for a session: an issue
+    ;; workflow can register its Linear issue first and fill in its PR later,
+    ;; while retrying either registration stays idempotent.
+    "CREATE TABLE IF NOT EXISTS shared_links (
+       owner_kind TEXT    NOT NULL,
+       owner_key  TEXT    NOT NULL,
+       link_kind  TEXT    NOT NULL,
+       url        TEXT    NOT NULL,
+       label      TEXT,
+       shared_at  INTEGER NOT NULL,
+       updated_at INTEGER NOT NULL,
+       visited_at INTEGER,
+       PRIMARY KEY (owner_kind, owner_key, link_kind))")
   "Statements that bring an empty or existing database up to date.
 All are `IF NOT EXISTS', so running them on every open is the whole migration
 story for as long as the schema only ever grows.  `bp/agent-sessions--schema-version'
@@ -1771,6 +1787,19 @@ re-edits the note point is sitting in."
        (let ((path (oref section value)))
          (cons (list (bp/agent-sessions--file-note-key path))
                (file-name-nondirectory (directory-file-name path)))))
+      ('bp/agent-session-link
+       (when-let* ((row (bp/agent-sessions--enclosing-section
+                         'bp/agent-session-row))
+                   (session (bp/agent-sessions--session-for-id
+                             (oref row value)))
+                   (link (seq-find
+                          (lambda (candidate)
+                            (equal (plist-get candidate :kind)
+                                   (oref section value)))
+                          (bp/agent-sessions--session-links session))))
+         (cons (list (bp/agent-sessions--link-note-key
+                      (plist-get link :url)))
+               (or (plist-get link :label) (plist-get link :url)))))
       ('bp/agent-session-row
        (when-let* ((session (bp/agent-sessions--session-for-id
                              (oref section value)))
@@ -1818,12 +1847,12 @@ note by hand is tedious, since \\[kill-line] only kills the line point is on."
                     "Note cleared for %s."
                   "Note saved for %s.")
                 label)))
-    (_ (message "Point is not on a repo, worktree, or session."))))
+    (_ (message "Point is not on a repo, worktree, session, file, or link."))))
 
 ;;; Shared files ------------------------------------------------------------
 ;;
-;; An agent that wants the user to read something runs `emacs-share-file FILE
-;; ["why"]' (bin/emacs-share-file, on the PATH of every session terminal); the
+;; An agent that wants the user to read something runs `emacs-share file FILE
+;; ["why"]' (`bin/emacs-share-file' remains a compatibility symlink); the
 ;; file then hangs under that agent's row in the dashboard, highlighted until
 ;; the user opens it.  It exists because a terminal is a bad inbox: "look at
 ;; /tmp/plan.md" scrolls away, and is only seen at all if you are already in
@@ -2074,7 +2103,7 @@ Do not create a buffer for PATH, and never replace unsaved buffer changes."
 ;;;###autoload
 (defun bp/agent-sessions-share-file (session-id path &optional label)
   "Attach PATH to the agent session running in terminal SESSION-ID.
-The entry point `bin/emacs-share-file' calls over emacsclient, so SESSION-ID is
+The `emacs-share file' entry point calls over emacsclient, so SESSION-ID is
 the terminal's EMACS_AGENT_SESSION_ID — the id the shell has — and resolving it
 to whatever session is running there happens here, the same split the hook path
 makes.  If an unmodified buffer already visits PATH, refresh it from disk;
@@ -2093,6 +2122,210 @@ channel back, so a failure has to be reported in the value, not signalled."
       (bp/agent-sessions--refresh-if-visible)
       (format "Shared %s" (abbreviate-file-name (expand-file-name path)))))))
 
+;;; Shared links ------------------------------------------------------------
+
+(defconst bp/agent-sessions--link-kind-labels
+  '(("linear" . "Linear")
+    ("pr" . "PR"))
+  "Supported external link kinds and their dashboard labels.")
+
+(defvar bp/agent-sessions--shared-links nil
+  "Hash table KEY -> list of shared-link plists, or nil before first load.
+A KEY is the same durable session identity used by notes and shared files.
+Each plist is (:kind K :url U :label L :shared-at TS :updated-at TS
+:visited-at TS-or-nil).  A session has at most one current link of each kind;
+the data is backed by the `shared_links' table.")
+
+(defun bp/agent-sessions--shared-links-table ()
+  "Return the shared-links table, loading it from the database once."
+  (or bp/agent-sessions--shared-links
+      (setq bp/agent-sessions--shared-links
+            (let ((table (make-hash-table :test 'equal)))
+              (pcase-dolist
+                  (`(,owner-kind ,owner-key ,link-kind ,url ,label
+                                  ,shared ,updated ,visited)
+                   (sqlite-select
+                    (bp/agent-sessions--db)
+                    "SELECT owner_kind, owner_key, link_kind, url, label,
+                            shared_at, updated_at, visited_at
+                       FROM shared_links ORDER BY shared_at, link_kind"))
+                (let ((key (list owner-kind owner-key)))
+                  (puthash key
+                           (append (gethash key table)
+                                   (list (list :kind link-kind :url url
+                                               :label label :shared-at shared
+                                               :updated-at updated
+                                               :visited-at visited)))
+                           table)))
+              table))))
+
+(defun bp/agent-sessions--link-note-key (url)
+  "Note key for the shared external link at URL."
+  (list "link" url))
+
+(defun bp/agent-sessions--links-scope (session)
+  "Manual-order scope for SESSION's shared external links."
+  (list "links" (or (cadr (car (bp/agent-sessions--session-note-keys session)))
+                    "?")))
+
+(defun bp/agent-sessions--session-links (session)
+  "External links shared with SESSION, in display order."
+  (let ((table (bp/agent-sessions--shared-links-table))
+        links)
+    (dolist (key (bp/agent-sessions--session-note-keys session))
+      (setq links (append links (copy-sequence (gethash key table)))))
+    (bp/agent-sessions--apply-manual-order
+     (bp/agent-sessions--links-scope session)
+     (lambda (link) (plist-get link :kind))
+     (sort links (lambda (a b) (< (plist-get a :shared-at)
+                                  (plist-get b :shared-at)))))))
+
+(defun bp/agent-sessions--shared-link-write (key link)
+  "Upsert LINK under durable session identity KEY in the database."
+  (sqlite-execute
+   (bp/agent-sessions--db)
+   "INSERT INTO shared_links
+      (owner_kind, owner_key, link_kind, url, label,
+       shared_at, updated_at, visited_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(owner_kind, owner_key, link_kind) DO UPDATE
+      SET url        = excluded.url,
+          label      = excluded.label,
+          updated_at = excluded.updated_at,
+          visited_at = excluded.visited_at"
+   (append key (list (plist-get link :kind)
+                     (plist-get link :url)
+                     (plist-get link :label)
+                     (plist-get link :shared-at)
+                     (plist-get link :updated-at)
+                     (plist-get link :visited-at)))))
+
+(defun bp/agent-sessions--links-collapse (keys)
+  "Move links stored under the less durable KEYS onto (car KEYS)."
+  (let* ((table (bp/agent-sessions--shared-links-table))
+         (primary (car keys))
+         (db (bp/agent-sessions--db))
+         (kept (gethash primary table))
+         moved)
+    (dolist (key (cdr keys))
+      (when-let ((links (gethash key table)))
+        (dolist (link links)
+          (unless (seq-find
+                   (lambda (candidate)
+                     (equal (plist-get candidate :kind)
+                            (plist-get link :kind)))
+                   kept)
+            (push link moved)))
+        (remhash key table)
+        (sqlite-execute
+         db "DELETE FROM shared_links WHERE owner_kind = ? AND owner_key = ?"
+         key)))
+    (when moved
+      (setq moved (nreverse moved))
+      (puthash primary (append kept moved) table)
+      (dolist (link moved)
+        (bp/agent-sessions--shared-link-write primary link)))))
+
+(defun bp/agent-sessions--share-link (session kind url label)
+  "Attach the current KIND link URL with LABEL to SESSION.
+An identical registration is a no-op, including preserving its visited state.
+Changing the URL or label updates the existing kind in place and marks it
+unvisited, while preserving its original display position."
+  (let ((keys (bp/agent-sessions--session-note-keys session))
+        (now (bp/agent-sessions--now)))
+    (unless keys
+      (error "Session has no durable identity to attach a link to"))
+    (bp/agent-sessions--links-collapse keys)
+    (let* ((table (bp/agent-sessions--shared-links-table))
+           (primary (car keys))
+           (links (gethash primary table))
+           (existing (seq-find
+                      (lambda (link) (equal (plist-get link :kind) kind))
+                      links))
+           (label (or (and label (not (string-empty-p label)) label)
+                      (and existing (equal url (plist-get existing :url))
+                           (plist-get existing :label)))))
+      (if (and existing
+               (equal url (plist-get existing :url))
+               (equal label (plist-get existing :label)))
+          existing
+        (let ((link (list :kind kind :url url :label label
+                          :shared-at (or (and existing
+                                               (plist-get existing :shared-at))
+                                         now)
+                          :updated-at now
+                          :visited-at nil)))
+          (puthash primary
+                   (if existing
+                       (mapcar (lambda (candidate)
+                                 (if (eq candidate existing) link candidate))
+                               links)
+                     (append links (list link)))
+                   table)
+          (bp/agent-sessions--shared-link-write primary link)
+          link)))))
+
+(defun bp/agent-sessions--detach-link (session kind)
+  "Remove the current KIND link from SESSION; return non-nil if attached."
+  (let ((table (bp/agent-sessions--shared-links-table))
+        (db (bp/agent-sessions--db))
+        removed)
+    (dolist (key (bp/agent-sessions--session-note-keys session))
+      (let ((links (gethash key table)))
+        (when (seq-find (lambda (link) (equal (plist-get link :kind) kind))
+                        links)
+          (puthash key
+                   (seq-remove
+                    (lambda (link) (equal (plist-get link :kind) kind))
+                    links)
+                   table)
+          (sqlite-execute
+           db
+           "DELETE FROM shared_links
+             WHERE owner_kind = ? AND owner_key = ? AND link_kind = ?"
+           (append key (list kind)))
+          (setq removed t))))
+    removed))
+
+(defun bp/agent-sessions--set-link-visited (match-fn visitedp)
+  "Set visited state of every shared link accepted by MATCH-FN."
+  (let ((db (bp/agent-sessions--db))
+        (stamp (and visitedp (bp/agent-sessions--now)))
+        changed)
+    (maphash
+     (lambda (key links)
+       (dolist (link links)
+         (when (and (funcall match-fn link)
+                    (not (eq (null (plist-get link :visited-at))
+                             (null stamp))))
+           (plist-put link :visited-at stamp)
+           (sqlite-execute
+            db
+            "UPDATE shared_links SET visited_at = ?
+              WHERE owner_kind = ? AND owner_key = ? AND link_kind = ?"
+            (list stamp (car key) (cadr key) (plist-get link :kind)))
+           (setq changed t))))
+     (bp/agent-sessions--shared-links-table))
+    changed))
+
+;;;###autoload
+(defun bp/agent-sessions-share-link (session-id kind url &optional label)
+  "Attach a typed external link to the session in terminal SESSION-ID.
+KIND is `linear' or `pr'; URL must be HTTP(S).  Re-registering the same value
+is idempotent.  Returns a printable status string for `emacs-share link'."
+  (let ((session (bp/agent-sessions--session-for-id session-id)))
+    (cond
+     ((null session)
+      (format "No Emacs terminal registered for session id %s" session-id))
+     ((not (assoc kind bp/agent-sessions--link-kind-labels))
+      (format "Unknown link kind `%s'; expected linear or pr" kind))
+     ((not (string-match-p "\\`https?://[^[:space:]]+\\'" url))
+      (format "Invalid link URL: %s" url))
+     (t
+      (bp/agent-sessions--share-link session kind url label)
+      (bp/agent-sessions--refresh-if-visible)
+      (format "Linked %s: %s" kind url)))))
+
 (defun bp/agent-sessions--file-at-point ()
   "Return (SESSION PATH FILE) for the shared-file row at point, or nil.
 Point may be on the row itself or inside a note rendered under it, which
@@ -2110,6 +2343,35 @@ resolves to the file the note is about — the same courtesy
           (list session path
                 (seq-find (lambda (f) (equal (plist-get f :path) path))
                           (bp/agent-sessions--session-files session))))))))
+
+(defun bp/agent-sessions--link-at-point ()
+  "Return (SESSION KIND LINK) for the shared-link row at point, or nil.
+Point may be on the link row or inside its note."
+  (let ((section (magit-current-section)))
+    (when (and section (eq (oref section type) 'bp/agent-session-note))
+      (setq section (oref section parent)))
+    (when (and section (eq (oref section type) 'bp/agent-session-link))
+      (let* ((kind (oref section value))
+             (row (bp/agent-sessions--enclosing-section 'bp/agent-session-row))
+             (session (and row (bp/agent-sessions--session-for-id
+                                (oref row value)))))
+        (when session
+          (list session kind
+                (seq-find (lambda (link)
+                            (equal (plist-get link :kind) kind))
+                          (bp/agent-sessions--session-links session))))))))
+
+(defun bp/agent-sessions--open-link-at-point ()
+  "Open the shared external link at point and clear its highlight."
+  (pcase (bp/agent-sessions--link-at-point)
+    (`(,_session ,_kind ,link)
+     (let ((url (plist-get link :url)))
+       (when (bp/agent-sessions--set-link-visited
+              (lambda (candidate)
+                (equal (plist-get candidate :url) url))
+              t)
+         (bp/agent-sessions--refresh-if-visible))
+       (browse-url url)))))
 
 (defun bp/agent-sessions--open-file-at-point (display-fn)
   "Open the shared file at point with DISPLAY-FN, clearing its highlight.
@@ -2158,6 +2420,42 @@ not make them learn two highlights for it.")
 (defface bp/agent-session-file
   '((t :inherit default))
   "Face for a shared file the user has already opened.")
+
+(defface bp/agent-session-link-unvisited
+  '((t :inherit bp/agent-session-needs-attention))
+  "Face for an external link not opened since the agent registered it.")
+
+(defface bp/agent-session-link
+  '((t :inherit link))
+  "Face for an external link the user has already opened.")
+
+(defun bp/agent-sessions--insert-link (link indent)
+  "Insert a row for shared external LINK, indented by INDENT."
+  (let* ((kind (plist-get link :kind))
+         (url (plist-get link :url))
+         (unvisited (null (plist-get link :visited-at)))
+         (kind-label (or (cdr (assoc kind bp/agent-sessions--link-kind-labels))
+                         kind)))
+    (push (cons (line-beginning-position)
+                (if unvisited 'needs-attention 'idle))
+          bp/agent-sessions--row-status)
+    (magit-insert-section (bp/agent-session-link kind)
+      (magit-insert-heading
+       (propertize
+        (concat indent (if unvisited "● " "  ")
+                (format "%-28s %s\n" kind-label
+                        (or (plist-get link :label) url)))
+        'font-lock-face (if unvisited
+                            'bp/agent-session-link-unvisited
+                          'bp/agent-session-link)))
+      (bp/agent-sessions--insert-note
+       (list (bp/agent-sessions--link-note-key url))
+       (concat indent "    ")))))
+
+(defun bp/agent-sessions--insert-links (session indent)
+  "Insert every external link shared with SESSION, indented by INDENT."
+  (dolist (link (bp/agent-sessions--session-links session))
+    (bp/agent-sessions--insert-link link indent)))
 
 (defun bp/agent-sessions--insert-file (file indent)
   "Insert a row for shared FILE, indented by INDENT.
@@ -2396,13 +2694,16 @@ looping behaviour everywhere else in Emacs is left alone."
 
 (defun bp/agent-sessions-jump ()
   "Act on the thing at point.
-On a session row, pop to its vterm buffer.  On a shared-file row, open the
-file — which is also what clears its highlight.  On a worktree or repo
-heading, open project.el's dispatch menu in that directory (see
-`bp/agent-sessions--switch-project')."
+On a session row, pop to its terminal.  Open a shared file or external link
+and clear its highlight.  On a worktree or repo heading, open project.el's
+dispatch menu in that directory (see `bp/agent-sessions--switch-project')."
   (interactive)
-  (if (bp/agent-sessions--file-at-point)
-      (bp/agent-sessions--open-file-at-point #'pop-to-buffer)
+  (cond
+   ((bp/agent-sessions--link-at-point)
+    (bp/agent-sessions--open-link-at-point))
+   ((bp/agent-sessions--file-at-point)
+    (bp/agent-sessions--open-file-at-point #'pop-to-buffer))
+   (t
     (let ((section (magit-current-section)))
       (pcase (and section (oref section type))
         ('bp/agent-session-row
@@ -2414,42 +2715,48 @@ heading, open project.el's dispatch menu in that directory (see
         ((or 'bp/agent-session-worktree 'bp/agent-session-repo)
          (let* ((value (oref section value))
                 (dir (or (plist-get value :path) (plist-get value :root))))
-         (if (and dir (file-directory-p dir))
-             (bp/agent-sessions--switch-project dir)
-           (message "No worktree directory at point."))))
-        (_ (message "Nothing to do here."))))))
+           (if (and dir (file-directory-p dir))
+               (bp/agent-sessions--switch-project dir)
+             (message "No worktree directory at point."))))
+        (_ (message "Nothing to do here.")))))))
 
 (defun bp/agent-sessions-display ()
-  "Display the session or shared file at point in another window.
-Point stays in the dashboard either way."
+  "Display or open the session attachment at point without selecting a terminal.
+Files and sessions use another window; external links open in the browser."
   (interactive)
   ;; inhibit-same-window: never reuse/replace the dashboard's own window.
-  (if (bp/agent-sessions--file-at-point)
-      (bp/agent-sessions--open-file-at-point
-       (lambda (buf) (display-buffer buf '(nil (inhibit-same-window . t)))))
+  (cond
+   ((bp/agent-sessions--link-at-point)
+    (bp/agent-sessions--open-link-at-point))
+   ((bp/agent-sessions--file-at-point)
+    (bp/agent-sessions--open-file-at-point
+     (lambda (buf) (display-buffer buf '(nil (inhibit-same-window . t))))))
+   (t
     (let* ((session (bp/agent-sessions--session-at-point))
            (buf (and session (plist-get session :buffer))))
       (if (buffer-live-p buf)
           (display-buffer buf '(nil (inhibit-same-window . t)))
-        (message "No session at point.")))))
+        (message "No session at point."))))))
 
 (defun bp/agent-sessions-display-or-browse ()
-  "Display the thing at point, opening a shared HTML file in a browser.
-For every other file or dashboard row, behave exactly like
+  "Display the thing at point, browsing links and shared HTML files.
+For every other shared file or dashboard row, behave exactly like
 `bp/agent-sessions-display'."
   (interactive)
-  (pcase (bp/agent-sessions--file-at-point)
-    (`(,_session ,path ,_file)
-     (if (not (string-equal (downcase (or (file-name-extension path) ""))
-                            "html"))
-         (bp/agent-sessions-display)
-       (if (not (file-exists-p path))
-           (message "File no longer exists: %s" (abbreviate-file-name path))
-         (when (bp/agent-sessions--set-visited
-                (lambda (file) (equal (plist-get file :path) path)) t)
-           (bp/agent-sessions--refresh-if-visible))
-         (browse-url-of-file path))))
-    (_ (bp/agent-sessions-display))))
+  (if (bp/agent-sessions--link-at-point)
+      (bp/agent-sessions--open-link-at-point)
+    (pcase (bp/agent-sessions--file-at-point)
+      (`(,_session ,path ,_file)
+       (if (not (string-equal (downcase (or (file-name-extension path) ""))
+                              "html"))
+           (bp/agent-sessions-display)
+         (if (not (file-exists-p path))
+             (message "File no longer exists: %s" (abbreviate-file-name path))
+           (when (bp/agent-sessions--set-visited
+                  (lambda (file) (equal (plist-get file :path) path)) t)
+             (bp/agent-sessions--refresh-if-visible))
+           (browse-url-of-file path))))
+      (_ (bp/agent-sessions-display)))))
 
 (defun bp/agent-sessions--row-locations ()
   "Return (POSITION . ID) for each session row, in buffer order."
@@ -2515,27 +2822,38 @@ section point was on is precisely the one that no longer exists."
     t))
 
 (defun bp/agent-sessions-kill ()
-  "Kill the session at point, or detach the shared file at point.
-On a session row this kills its terminal buffer and moves to a neighbouring
-row.  On a shared-file row it drops the file from that session's list and
-leaves the file on disk completely alone: this list is an inbox, and clearing
-an item out of it must never be able to destroy the thing it points at."
+  "Kill the session at point, or detach its shared file or link.
+Detaching drops only the dashboard pointer; files on disk and external targets
+are untouched."
   (interactive)
-  (pcase (bp/agent-sessions--file-at-point)
-    (`(,session ,path ,_file)
-     ;; Resolve the neighbour *before* detaching, while the row is still on
-     ;; screen to have neighbours at all.
+  (pcase (bp/agent-sessions--link-at-point)
+    (`(,session ,kind ,link)
      (let ((ident (bp/agent-sessions--neighbour-ident
                    (bp/agent-sessions--enclosing-section
-                    'bp/agent-session-file))))
-       (if (bp/agent-sessions--detach-file session path)
+                    'bp/agent-session-link))))
+       (if (bp/agent-sessions--detach-link session kind)
            (progn
              (bp/agent-sessions--refresh)
              (bp/agent-sessions--goto-ident ident)
-             (message "Detached %s (the file on disk is untouched)."
-                      (file-name-nondirectory (directory-file-name path))))
+             (message "Detached %s link."
+                      (or (plist-get link :label) (plist-get link :url))))
          (message "Not attached to this session."))))
-    (_ (bp/agent-sessions--kill-session))))
+    (_
+     (pcase (bp/agent-sessions--file-at-point)
+       (`(,session ,path ,_file)
+        ;; Resolve the neighbour *before* detaching, while the row is still on
+        ;; screen to have neighbours at all.
+        (let ((ident (bp/agent-sessions--neighbour-ident
+                      (bp/agent-sessions--enclosing-section
+                       'bp/agent-session-file))))
+          (if (bp/agent-sessions--detach-file session path)
+              (progn
+                (bp/agent-sessions--refresh)
+                (bp/agent-sessions--goto-ident ident)
+                (message "Detached %s (the file on disk is untouched)."
+                         (file-name-nondirectory (directory-file-name path))))
+            (message "Not attached to this session."))))
+       (_ (bp/agent-sessions--kill-session))))))
 
 (defun bp/agent-sessions--kill-session ()
   "Kill the session at point and move to a neighboring session row."
@@ -2561,19 +2879,27 @@ reachability a hook-reported needs-attention has, for sessions you want to
 come back to yourself.  With a prefix argument (UNMARK), clear the mark.
 The mark also clears on its own once you focus the session's buffer.
 
-On a shared-file row this toggles the unopened highlight instead: `u' on a
-file you have opened lights it up again, and `u' on one you have not clears it
-without opening it — which is the whole point, for a file you have decided you
-do not need to read.  UNMARK always clears."
+On a shared-file or external-link row this toggles the unopened highlight
+instead.  UNMARK always clears."
   (interactive "P")
-  (pcase (bp/agent-sessions--file-at-point)
-    (`(,_session ,path ,file)
-     (let ((visited (or (and unmark t) (null (plist-get file :visited-at)))))
-       (bp/agent-sessions--set-visited
-        (lambda (f) (equal (plist-get f :path) path)) visited)
+  (pcase (bp/agent-sessions--link-at-point)
+    (`(,_session ,_kind ,link)
+     (let ((visited (or (and unmark t) (null (plist-get link :visited-at))))
+           (url (plist-get link :url)))
+       (bp/agent-sessions--set-link-visited
+        (lambda (candidate) (equal (plist-get candidate :url) url)) visited)
        (bp/agent-sessions--refresh)
        (message (if visited "Marked as read." "Marked as unread."))))
-    (_ (bp/agent-sessions--mark-session-unread unmark))))
+    (_
+     (pcase (bp/agent-sessions--file-at-point)
+       (`(,_session ,path ,file)
+        (let ((visited (or (and unmark t)
+                           (null (plist-get file :visited-at)))))
+          (bp/agent-sessions--set-visited
+           (lambda (f) (equal (plist-get f :path) path)) visited)
+          (bp/agent-sessions--refresh)
+          (message (if visited "Marked as read." "Marked as unread."))))
+       (_ (bp/agent-sessions--mark-session-unread unmark))))))
 
 (defun bp/agent-sessions--mark-session-unread (unmark)
   "Set or clear the unread mark on the session row at point."
@@ -2863,25 +3189,26 @@ creating one."
        root (plist-get (bp/agent-session--repo-info root) :worktree)))))
 
 (defun bp/agent-sessions--rows ()
-  "Return (LINE-POS . STATUS) for each session and shared-file row, in order.
+  "Return (LINE-POS . STATUS) for each session and attachment row, in order.
 This is what the last render drew (`bp/agent-sessions--row-status'), never a
 fresh lookup: only the render path knows the displayed status."
   bp/agent-sessions--row-status)
 
 (defun bp/agent-sessions--hidden-file-row-p (row)
-  "Return non-nil when ROW belongs to a hidden shared-file section."
+  "Return non-nil when ROW belongs to a hidden file or external-link section."
   (let ((position (car row)))
     (and (invisible-p position)
          (save-excursion
            (goto-char position)
            (let ((section (magit-current-section)))
              (and section
-                  (eq (oref section type) 'bp/agent-session-file)))))))
+                  (memq (oref section type)
+                        '(bp/agent-session-file bp/agent-session-link))))))))
 
 (defun bp/agent-sessions--goto-row (direction predicate)
   "Move point to the next/previous row (DIRECTION is `next' or `prev').
 When PREDICATE is non-nil, only rows whose status satisfies it are considered.
-Hidden shared-file rows are excluded from filtered navigation; hidden session
+Hidden attachment rows are excluded from filtered navigation; hidden session
 rows remain candidates."
   (let* ((cur (line-beginning-position))
          (positions (mapcar #'car
@@ -2926,12 +3253,12 @@ trade places constantly; the stable order is the default for that reason."
   (memq status '(needs-attention error)))
 
 (defun bp/agent-sessions-next-attention ()
-  "Move to the next session or visible file row that needs attention."
+  "Move to the next session or visible attachment that needs attention."
   (interactive)
   (bp/agent-sessions--goto-row 'next #'bp/agent-sessions--attention-p))
 
 (defun bp/agent-sessions-prev-attention ()
-  "Move to the previous session or visible file row that needs attention."
+  "Move to the previous session or visible attachment that needs attention."
   (interactive)
   (bp/agent-sessions--goto-row 'prev #'bp/agent-sessions--attention-p))
 
@@ -2990,6 +3317,15 @@ are exactly what the next render will order."
            (list (bp/agent-sessions--files-scope session)
                  (mapcar (lambda (f) (plist-get f :path))
                          (bp/agent-sessions--session-files session))
+                 (oref section value)))))
+      ('bp/agent-session-link
+       (let* ((row (bp/agent-sessions--enclosing-section 'bp/agent-session-row))
+              (session (and row (bp/agent-sessions--session-for-id
+                                 (oref row value)))))
+         (when session
+           (list (bp/agent-sessions--links-scope session)
+                 (mapcar (lambda (link) (plist-get link :kind))
+                         (bp/agent-sessions--session-links session))
                  (oref section value))))))))
 
 (defun bp/agent-sessions--merge-order (saved visible)
@@ -3379,6 +3715,16 @@ the path it came from is rarely what the surrounding prose wants to read."
      :description (file-name-nondirectory (directory-file-name path)))
     t))
 
+(defun bp/agent-sessions--store-external-link (link)
+  "Store shared external LINK as an ordinary HTTP(S) Org link."
+  (let ((url (plist-get link :url)))
+    (when (and url (not (string-empty-p url)))
+      (org-link-store-props
+       :type (if (string-prefix-p "https://" url) "https" "http")
+       :link url
+       :description (or (plist-get link :label) url))
+      t)))
+
 (defun bp/agent-sessions--parse-session-link (link)
   "Return (AGENT SESSION-ID WORKTREE) parsed from LINK, or nil.
 LINK may include the `agent-session:' prefix or only its Org handler payload."
@@ -3402,21 +3748,24 @@ the confirmation prompt Org shows before running arbitrary elisp."
 
 (defun bp/agent-sessions--org-store-link (&optional _interactive)
   "Store a link for the dashboard row at point, or for the session around point.
-A shared-file row stores a plain `file:' link to that file; a session row (or a
-terminal buffer with a live session, keyed by the buffer-local
-`bp/agent-session-id') stores an `agent-session:' link that resumes it.
-Registered as the `:store' handler for `org-store-link'."
-  (if-let* (((derived-mode-p 'bp/agent-sessions-mode))
-            (file (bp/agent-sessions--file-at-point)))
-      ;; A shared-file row links to the file, not to the session that shared
-      ;; it.  Checked first because a file row is nested *inside* a session
-      ;; row, so the session is what point would otherwise resolve to.
-      (bp/agent-sessions--store-file-link (nth 1 file))
+A shared file or external URL stores its ordinary link; a session row (or a
+terminal buffer with a live session) stores an `agent-session:' resume link."
+  (cond
+   ((and (derived-mode-p 'bp/agent-sessions-mode)
+         (bp/agent-sessions--link-at-point))
+    (bp/agent-sessions--store-external-link
+     (nth 2 (bp/agent-sessions--link-at-point))))
+   ((and (derived-mode-p 'bp/agent-sessions-mode)
+         (bp/agent-sessions--file-at-point))
+    ;; Attachments are nested inside a session row, so resolve them first.
+    (bp/agent-sessions--store-file-link
+     (nth 1 (bp/agent-sessions--file-at-point))))
+   (t
     (bp/agent-sessions--store-link-for
      (cond ((derived-mode-p 'bp/agent-sessions-mode)
             (bp/agent-sessions--session-at-point))
            (bp/agent-session-id
-            (gethash bp/agent-session-id bp/agent-sessions))))))
+            (gethash bp/agent-session-id bp/agent-sessions)))))))
 
 (defun bp/agent-sessions--sync-default-directory ()
   "Track the worktree/repo at point in `default-directory'.
@@ -4105,7 +4454,7 @@ RULES
   `checkout', `rebase' or `stash' — unless the task says this worktree is
   yours.  The index and HEAD are shared by everyone in a worktree, so staging
   anything would clobber a co-tenant's work in progress.
-- `emacs-share-file FILE \"why\"' hands a file to the human in the dashboard.
+- `emacs-share file FILE \"why\"' hands a file to the human in the dashboard.
   That is for the human, and is not a substitute for reporting `done'.
 
 === YOUR TASK ===
