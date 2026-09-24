@@ -487,7 +487,8 @@ the body names the agent type, state, and its terminal title (task summary)."
         ;; agent without one may have been waiting for this event to make a
         ;; terminal paste safe.
         (bp/agent-orchestration--hydrate session-id)
-        (bp/agent-orchestration-deliver session-id)))
+        (bp/agent-orchestration-deliver
+         session-id (equal event-name "UserPromptSubmit"))))
     (bp/agent-sessions--refresh-if-visible))
   nil)
 
@@ -3845,17 +3846,12 @@ vocabulary, not ours, and a list here would be wrong within a release."
   "When non-nil, automatically hand queued mail to a recipient agent.
 Codex mail uses its native session queue, whether the conversation is running
 or resting, so it never shares the human's terminal composer.  Claude mail uses
-Claude Code's stash and queue-submit actions, preserving and restoring a human
-draft around the delivery.  Plain `status' mail alone waits while either agent
-is running.  `emacs-agent wait' remains the explicit way for an agent to collect
-its own mail."
+Claude Code's queue-submit action only when its composer is known to be empty.
+Mail that arrives while the human is drafting stays unread until the human
+submits that prompt, then queues behind it.  Plain `status' mail alone waits
+while either agent is running.  `emacs-agent wait' remains the explicit way for
+an agent to collect its own mail."
   :type 'boolean)
-
-(defcustom bp/agent-orchestration-claude-stash-key "\C-s"
-  "Terminal bytes bound to Claude Code's `chat:stash' action.
-The default is Claude Code's default Ctrl+S binding.  Keep this synchronized
-with `~/.claude/keybindings.json' if that action is rebound."
-  :type 'string)
 
 (defcustom bp/agent-orchestration-claude-queue-submit-key "\C-x\r"
   "Terminal bytes bound to Claude Code's `chat:queueSubmit' action.
@@ -4096,6 +4092,28 @@ human draft deliberately does not match."
   "Non-nil when SESSION is a Claude conversation."
   (equal (downcase (format "%s" (plist-get session :agent-type))) "claude"))
 
+(defun bp/agent-orchestration--claude-empty-composer-p (session)
+  "Non-nil when SESSION visibly has Claude's empty composer.
+Claude renders the current input between a line beginning with its `❯' prompt
+and a horizontal separator.  Inspect only the most recent prompt near the end
+of the terminal buffer.  A non-empty composer, or an unrecognized display, is
+deliberately not receptive: preserving a human draft matters more than prompt
+mail delivery."
+  (let ((buf (plist-get session :buffer)))
+    (and (buffer-live-p buf)
+         (with-current-buffer buf
+           (save-restriction
+             (widen)
+             (goto-char (point-max))
+             (when (re-search-backward
+                    "^❯[ \t\u00a0]*" (max (point-min) (- (point-max) 4000)) t)
+               (let ((input-start (match-end 0)))
+                 (and (re-search-forward "^─+[ \t]*$" nil t)
+                      (string-empty-p
+                       (string-trim
+                        (buffer-substring-no-properties
+                         input-start (match-beginning 0))))))))))))
+
 (defun bp/agent-orchestration--terminal-input (buf string)
   "Send raw terminal input STRING to BUF without paste handling or Enter."
   (with-current-buffer buf
@@ -4161,19 +4179,11 @@ explicit inbox check."
                        (if (string-empty-p detail) "" (format " (%s)" detail))))
             nil))))))
 
-(defun bp/agent-orchestration--claude-restore-draft (buf)
-  "Restore the prompt stashed while delivering agent mail to Claude in BUF."
-  (when (buffer-live-p buf)
-    (bp/agent-orchestration--terminal-input
-     buf bp/agent-orchestration-claude-stash-key)))
-
 (defun bp/agent-orchestration--claude-submit-mail (buf)
-  "Queue the prepared agent-mail prompt in Claude BUF, then restore its draft."
+  "Queue the prepared agent-mail prompt in Claude BUF."
   (when (buffer-live-p buf)
     (bp/agent-orchestration--terminal-input
-     buf bp/agent-orchestration-claude-queue-submit-key)
-    (run-at-time bp/agent-orchestration--submit-delay nil
-                 #'bp/agent-orchestration--claude-restore-draft buf)))
+     buf bp/agent-orchestration-claude-queue-submit-key)))
 
 (defun bp/agent-orchestration--claude-paste-mail (buf text)
   "Paste agent-mail TEXT into the now-empty composer in Claude BUF."
@@ -4183,14 +4193,13 @@ explicit inbox check."
                  #'bp/agent-orchestration--claude-submit-mail buf)))
 
 (defun bp/agent-orchestration--claude-queue (session messages)
-  "Queue MESSAGES in Claude SESSION without absorbing a human's draft.
-Claude Code has no session-addressed queue command.  Its TUI does provide
-`chat:stash' and `chat:queueSubmit', however, so stash the current composer,
-paste and queue the mail, then restore the composer after Claude clears it."
+  "Queue MESSAGES in Claude SESSION after its composer becomes available.
+Claude Code has no session-addressed queue command.  The caller must establish
+that the composer is empty, or that `UserPromptSubmit' has just reported the
+human's draft submitted.  Delay the paste once so Claude can clear a freshly
+submitted prompt, then use its `chat:queueSubmit' action."
   (let ((buf (plist-get session :buffer)))
     (when (buffer-live-p buf)
-      (bp/agent-orchestration--terminal-input
-       buf bp/agent-orchestration-claude-stash-key)
       (run-at-time
        bp/agent-orchestration--submit-delay nil
        #'bp/agent-orchestration--claude-paste-mail buf
@@ -4346,13 +4355,14 @@ most-recently-viewed order."
       (bp/agent-orchestration--paste buf text)
       (message "Sent selected text to %s" (buffer-name buf)))))
 
-(defun bp/agent-orchestration-deliver (id)
+(defun bp/agent-orchestration-deliver (id &optional user-prompt-submitted)
   "Hand ID's pending mail to its agent when safe; return the delivery method.
 The result is `delivered' for a generic idle-terminal paste, `queued' for an
 agent-specific queue, and nil when mail remains unread.  Called both on arrival
-and from the hook path.  Terminal delivery consumes before its asynchronous
-keystrokes to stay idempotent; Codex consumes only after its CLI acknowledges
-ownership."
+and from the hook path.  USER-PROMPT-SUBMITTED means this call handles a
+`UserPromptSubmit' event, so Claude mail withheld behind a human draft can now
+be queued.  Terminal delivery consumes before its asynchronous keystrokes to
+stay idempotent; Codex consumes only after its CLI acknowledges ownership."
   (when bp/agent-orchestration-push-when-idle
     (let* ((session (bp/agent-sessions--session-for-id id))
            (buf (and session (plist-get session :buffer)))
@@ -4390,14 +4400,20 @@ ownership."
        ((and pending
              (bp/agent-orchestration--claude-session-p session)
              (buffer-live-p buf)
-             (bp/agent-sessions--foreground-command buf)
-             (or (not (eq (plist-get session :status) 'running))
-                 (seq-some
-                  (lambda (message)
-                    (member (plist-get message :type)
-                            bp/agent-orchestration-actionable-message-types))
-                  pending)))
-        (when (bp/agent-orchestration--claude-queue session pending)
+             (bp/agent-sessions--foreground-command buf))
+        ;; This branch owns Claude delivery even when it deliberately waits,
+        ;; preventing the generic idle paste below from absorbing a draft.
+        (when (and
+               (or user-prompt-submitted
+                   (bp/agent-orchestration--claude-empty-composer-p session))
+               (or user-prompt-submitted
+                   (not (eq (plist-get session :status) 'running))
+                   (seq-some
+                    (lambda (message)
+                      (member (plist-get message :type)
+                              bp/agent-orchestration-actionable-message-types))
+                    pending))
+               (bp/agent-orchestration--claude-queue session pending))
           (bp/agent-orchestration--consume pending)
           (bp/agent-sessions--refresh-if-visible)
           'queued))
