@@ -115,7 +115,7 @@
             (should-not consumed)))
       (kill-buffer buffer))))
 
-(ert-deftest bp/agent-orchestration-actionable-mail-queues-running-claude ()
+(ert-deftest bp/agent-orchestration-actionable-mail-queues-empty-running-claude ()
   (let* ((id "terminal")
          (buffer (generate-new-buffer " *claude-delivery-test*"))
          (message (bp/agent-orchestration-test--message "answer" "decision"))
@@ -124,6 +124,8 @@
          queued consumed)
     (unwind-protect
         (progn
+          (with-current-buffer buffer
+            (insert "────────────────\n❯\u00a0\n────────────────\n  Opus"))
           (puthash id (list message) bp/agent-orchestration--mail)
           (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
                      (lambda (_) session))
@@ -140,7 +142,80 @@
             (should (equal (list message) consumed))))
       (kill-buffer buffer))))
 
-(ert-deftest bp/agent-orchestration-claude-queue-stashes-and-restores-draft ()
+(ert-deftest bp/agent-orchestration-claude-draft-withholds-actionable-mail ()
+  (let* ((id "terminal")
+         (buffer (generate-new-buffer " *claude-draft-delivery-test*"))
+         (message (bp/agent-orchestration-test--message "answer" "decision"))
+         (session (list :status 'stopped :agent-type 'claude :buffer buffer))
+         (bp/agent-orchestration--mail (make-hash-table :test 'equal))
+         queued consumed)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert "────────────────\n❯\u00a0my unfinished message\n"
+                    "────────────────\n  Opus"))
+          (puthash id (list message) bp/agent-orchestration--mail)
+          (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+                     (lambda (_) session))
+                    ((symbol-function 'bp/agent-sessions--foreground-command)
+                     (lambda (_) "claude"))
+                    ((symbol-function 'bp/agent-orchestration--claude-queue)
+                     (lambda (_ messages) (setq queued messages) t))
+                    ((symbol-function 'bp/agent-orchestration--consume)
+                     (lambda (messages) (setq consumed messages))))
+            (should-not (bp/agent-orchestration-deliver id))
+            (should-not queued)
+            (should-not consumed)
+            (should-not (plist-get message :read))))
+      (kill-buffer buffer))))
+
+(ert-deftest bp/agent-orchestration-claude-submit-releases-withheld-mail ()
+  (let* ((id "terminal")
+         (buffer (generate-new-buffer " *claude-submit-delivery-test*"))
+         (message (bp/agent-orchestration-test--message "status" "progress"))
+         (session (list :status 'running :agent-type 'claude :buffer buffer))
+         (bp/agent-orchestration--mail (make-hash-table :test 'equal))
+         queued consumed)
+    (unwind-protect
+        (progn
+          ;; Keep the old draft visible to prove the hook, rather than a
+          ;; screen redraw race, is the authority that it was submitted.
+          (with-current-buffer buffer
+            (insert "────────────────\n❯\u00a0my submitted message\n"
+                    "────────────────\n  Opus"))
+          (puthash id (list message) bp/agent-orchestration--mail)
+          (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+                     (lambda (_) session))
+                    ((symbol-function 'bp/agent-sessions--foreground-command)
+                     (lambda (_) "claude"))
+                    ((symbol-function 'bp/agent-orchestration--claude-queue)
+                     (lambda (_ messages) (setq queued messages) t))
+                    ((symbol-function 'bp/agent-orchestration--consume)
+                     (lambda (messages) (setq consumed messages)))
+                    ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                     #'ignore))
+            (should (eq 'queued (bp/agent-orchestration-deliver id t)))
+            (should (equal (list message) queued))
+            (should (equal (list message) consumed))))
+      (kill-buffer buffer))))
+
+(ert-deftest bp/agent-orchestration-claude-composer-detection-is-conservative ()
+  (let* ((buffer (generate-new-buffer " *claude-composer-test*"))
+         (session (list :agent-type "claude" :buffer buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (insert "────────────────\n❯\u00a0\n────────────────\n  Opus")
+          (should (bp/agent-orchestration--claude-empty-composer-p session))
+          (erase-buffer)
+          (insert "────────────────\n❯\u00a0first line\n  wrapped line\n"
+                  "────────────────\n  Opus")
+          (should-not (bp/agent-orchestration--claude-empty-composer-p session))
+          (erase-buffer)
+          (insert "Claude output without a recognizable composer")
+          (should-not (bp/agent-orchestration--claude-empty-composer-p session)))
+      (kill-buffer buffer))))
+
+(ert-deftest bp/agent-orchestration-claude-queue-only-pastes-and-submits ()
   (let* ((buffer (generate-new-buffer " *claude-queue-test*"))
          (session (list :agent-type "claude" :buffer buffer))
          (message (bp/agent-orchestration-test--message "answer" "result"))
@@ -154,14 +229,10 @@
                    (lambda (_ _ function &rest args) (apply function args))))
           (should (bp/agent-orchestration--claude-queue session (list message)))
           (setq events (nreverse events))
-          (should (equal (mapcar #'car events) '(input paste input input)))
-          (should (equal (mapcar #'cadr (list (nth 0 events)
-                                              (nth 2 events)
-                                              (nth 3 events)))
-                         (list bp/agent-orchestration-claude-stash-key
-                               bp/agent-orchestration-claude-queue-submit-key
-                               bp/agent-orchestration-claude-stash-key)))
-          (should (string-match-p "Subject: result" (cadr (nth 1 events)))))
+          (should (equal (mapcar #'car events) '(paste input)))
+          (should (equal (cadr (nth 1 events))
+                         bp/agent-orchestration-claude-queue-submit-key))
+          (should (string-match-p "Subject: result" (cadr (nth 0 events)))))
       (kill-buffer buffer))))
 
 (ert-deftest bp/agent-orchestration-idle-codex-uses-native-queue-not-composer ()
