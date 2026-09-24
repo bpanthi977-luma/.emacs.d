@@ -381,13 +381,15 @@ question flow.
 
 **Agent mail preserves the human's terminal composer.** Codex has a native
 session queue, so its mail never touches the terminal. Claude Code does not
-expose a session-addressed CLI queue, but versions 2.1.247 and newer provide
-`chat:stash` and `chat:queueSubmit`. Delivery sends the configured stash key,
-bracket-pastes the mail into the cleared composer, queue-submits it, and then
-restores the stashed human draft. The key byte strings are customizable as
-`bp/agent-orchestration-claude-stash-key` and
-`bp/agent-orchestration-claude-queue-submit-key` for users who rebind those
-Claude actions.
+expose a session-addressed CLI queue. Its rendered prompt is therefore the
+safety boundary: delivery proceeds only when the current composer is visibly
+empty. If the composer contains a human draft, mail stays unread and the draft
+is never moved. The next `UserPromptSubmit` hook proves that the human has sent
+that draft; delivery then bracket-pastes the mail into the newly cleared
+composer and invokes `chat:queueSubmit`, putting it behind the human's message.
+The queue-submit key bytes are customizable as
+`bp/agent-orchestration-claude-queue-submit-key` for users who rebind that
+Claude action.
 
 An hour-long turn is exactly when a question, answer, blocked report, or done
 report must not wait for `Stop'. When one of those types arrives for a running
@@ -399,9 +401,10 @@ the inbox. Codex must acknowledge the queue before the messages are consumed;
 failure leaves them unread for `check' or a later retry. Resting Codex sessions
 use the same native queue: terminal paste would share the human's composer, so
 a half-written human prompt could otherwise be submitted as part of agent mail.
-Resting Claude sessions use the same stash/queue/restore sequence. Other agents
-keep the idle behavior because typing into a busy TUI is not a portable queue
-API.
+Resting Claude sessions use the same empty-composer gate. An unrecognized
+Claude display is treated conservatively as non-empty and waits for the next
+user submission. Other agents keep the idle behavior because typing into a busy
+TUI is not a portable queue API.
 
 Idle delivery fires on the `Stop` hook (via
 `bp/agent-orchestration-deliver`) and on arrival. It requires both a non-running
