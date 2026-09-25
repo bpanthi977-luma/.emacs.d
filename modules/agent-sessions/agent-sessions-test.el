@@ -228,6 +228,25 @@
           (should-not
            (bp/agent-orchestration--claude-receptive-composer-p session))
           (erase-buffer)
+          (insert "────────────────\n❯\u00a0")
+          (let ((start (point)))
+            (insert "suggested completion")
+            (add-text-properties
+             start (point)
+             '(font-lock-face (:inherit (eat-term-faint eat-term-font-0)))))
+          (insert "\n────────────────\n  Opus")
+          (should (bp/agent-orchestration--claude-receptive-composer-p session))
+          (erase-buffer)
+          (insert "────────────────\n❯\u00a0typed prefix ")
+          (let ((start (point)))
+            (insert "suggested remainder")
+            (add-text-properties
+             start (point)
+             '(font-lock-face (:inherit (eat-term-faint eat-term-font-0)))))
+          (insert "\n────────────────\n  Opus")
+          (should-not
+           (bp/agent-orchestration--claude-receptive-composer-p session))
+          (erase-buffer)
           (insert "Claude output without a recognizable composer")
           (should-not
            (bp/agent-orchestration--claude-receptive-composer-p session)))
