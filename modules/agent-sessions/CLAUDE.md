@@ -382,29 +382,44 @@ question flow.
 **Agent mail preserves the human's terminal composer.** Codex has a native
 session queue, so its mail never touches the terminal. Claude Code does not
 expose a session-addressed CLI queue. Its rendered prompt is therefore the
-safety boundary: delivery proceeds only when the current composer is visibly
-empty. If the composer contains a human draft, mail stays unread and the draft
-is never moved. The next `UserPromptSubmit` hook proves that the human has sent
-that draft; delivery then bracket-pastes the mail into the newly cleared
-composer and invokes `chat:queueSubmit`, putting it behind the human's message.
+safety boundary: delivery proceeds only when the current composer is known not
+to contain an unsent draft. If it does contain a human draft, mail stays unread
+and the draft is never moved. The next `UserPromptSubmit` hook proves that the
+human has sent that draft; delivery then bracket-pastes the mail into the
+available composer and invokes `chat:queueSubmit`, putting it behind the
+human's message.
 The queue-submit key bytes are customizable as
 `bp/agent-orchestration-claude-queue-submit-key` for users who rebind that
 Claude action.
+
+Claude does not always clear submitted text from the rendered composer before
+the hook callback tries delivery; it can retain that text through the turn or
+until the next edit. `UserPromptSubmit` includes the authoritative
+`user_prompt`, so the session remembers it. A non-empty composer whose
+whitespace-normalized text still equals that submitted prompt is safe; changed
+text is a new human draft and remains protected. This comparison also absorbs
+visual hard wrapping. Without it, a Stop or mail-arrival check can see the old
+prompt, withhold mail, and receive no further event until the human submits
+again.
 
 An hour-long turn is exactly when a question, answer, blocked report, or done
 report must not wait for `Stop'. When one of those types arrives for a running
 conversation, delivery queues all pending mail in order. For Codex it calls
 `codex queue --thread … --message …`; for Claude it uses the TUI action sequence
-above. A plain `status' does not trigger steering, but an
-earlier status rides along with later actionable mail so delivery cannot reorder
-the inbox. Codex must acknowledge the queue before the messages are consumed;
+above. Codex keeps the actionable-type steering policy: a plain `status' does
+not trigger its native queue, but an earlier status rides along with later
+actionable mail so delivery cannot reorder the inbox. Claude instead queues all
+pending types whenever its composer is known to be safe. Its hook status can
+remain `running' while the main chat is waiting on background work, so using
+message type or status there would strand ordinary mail despite an available
+composer. Codex must acknowledge the queue before messages are consumed;
 failure leaves them unread for `check' or a later retry. Resting Codex sessions
 use the same native queue: terminal paste would share the human's composer, so
 a half-written human prompt could otherwise be submitted as part of agent mail.
-Resting Claude sessions use the same empty-composer gate. An unrecognized
-Claude display is treated conservatively as non-empty and waits for the next
-user submission. Other agents keep the idle behavior because typing into a busy
-TUI is not a portable queue API.
+Resting Claude sessions use the same composer gate. An unrecognized Claude
+display is treated conservatively as non-empty and waits for the next user
+submission. Other agents keep the idle behavior because typing into a busy TUI
+is not a portable queue API.
 
 Idle delivery fires on the `Stop` hook (via
 `bp/agent-orchestration-deliver`) and on arrival. It requires both a non-running
