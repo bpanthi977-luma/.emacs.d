@@ -3859,7 +3859,7 @@ vocabulary, not ours, and a list here would be wrong within a release."
   "When non-nil, automatically hand queued mail to a recipient agent.
 Codex mail uses its native session queue, whether the conversation is running
 or resting, so it never shares the human's terminal composer.  Claude mail uses
-Claude Code's queue-submit action only when its composer is known to be empty.
+Claude Code's queue-submit action only when its composer is known to be safe.
 Mail that arrives while the human is drafting stays unread until the human
 submits that prompt, then queues behind it.  Claude's composer safety decides
 delivery regardless of message type or stale hook status; Codex retains its
@@ -4111,6 +4111,41 @@ human draft deliberately does not match."
   (string-trim
    (replace-regexp-in-string "[[:space:]\u00a0]+" " " text)))
 
+(defun bp/agent-orchestration--face-inherits-p (face parent)
+  "Non-nil when FACE names or inherits from PARENT."
+  (cond
+   ((eq face parent) t)
+   ((and (listp face) (keywordp (car face)))
+    (bp/agent-orchestration--face-inherits-p
+     (plist-get face :inherit) parent))
+   ((listp face)
+    (seq-some (lambda (item)
+                (bp/agent-orchestration--face-inherits-p item parent))
+              face))))
+
+(defun bp/agent-orchestration--claude-ghost-completion-p (text)
+  "Non-nil when every non-whitespace character in TEXT is Claude ghost text.
+Claude renders its Tab completion with the terminal's ANSI faint face.  A
+typed prefix is not faint, so a partially accepted or edited completion remains
+a real draft rather than becoming eligible for mail delivery."
+  (let ((pos 0)
+        (end (length text))
+        saw-text
+        (all-faint t))
+    (while (and all-faint (< pos end))
+      (let* ((next (next-property-change pos text end))
+             (chunk (substring-no-properties text pos next)))
+        (unless (string-match-p "\\`[[:space:]\u00a0]*\\'" chunk)
+          (setq saw-text t)
+          (unless (or (bp/agent-orchestration--face-inherits-p
+                       (get-text-property pos 'face text) 'eat-term-faint)
+                      (bp/agent-orchestration--face-inherits-p
+                       (get-text-property pos 'font-lock-face text)
+                       'eat-term-faint))
+            (setq all-faint nil)))
+        (setq pos next)))
+    (and saw-text all-faint)))
+
 (defun bp/agent-orchestration--claude-composer-text (session)
   "Return SESSION's visibly rendered Claude composer text, or nil if unknown.
 Claude renders the current input between a line beginning with its `❯' prompt
@@ -4126,15 +4161,19 @@ of the terminal buffer."
                     "^❯[ \t\u00a0]*" (max (point-min) (- (point-max) 4000)) t)
                (let ((input-start (match-end 0)))
                  (and (re-search-forward "^─+[ \t]*$" nil t)
-                      (buffer-substring-no-properties
+                      ;; Preserve terminal faces: Claude's inline completion is
+                      ;; distinguishable from typed input by its ANSI faint
+                      ;; styling even though both occupy the composer visually.
+                      (buffer-substring
                        input-start (match-beginning 0))))))))))
 
 (defun bp/agent-orchestration--claude-receptive-composer-p (session)
   "Non-nil when SESSION's Claude composer can safely receive agent mail.
-An empty composer is receptive.  Claude also retains the last submitted text
-in the input box during redraws and sometimes after a turn; that exact text is
-receptive too because `UserPromptSubmit' proves it is no longer a draft.
-Anything unrecognized or changed from the submitted prompt is treated as a
+An empty composer is receptive, as is an all-faint inline completion that has
+not been accepted.  Claude also retains the last submitted text in the input
+box during redraws and sometimes after a turn; that exact text is receptive too
+because `UserPromptSubmit' proves it is no longer a draft.  Anything
+unrecognized, non-faint, or changed from the submitted prompt is treated as a
 live human draft and left untouched."
   (let* ((visible (bp/agent-orchestration--claude-composer-text session))
          (submitted (plist-get session :submitted-prompt))
@@ -4143,6 +4182,7 @@ live human draft and left untouched."
                (bp/agent-orchestration--claude-normalize-prompt visible))))
     (and normalized-visible
          (or (string-empty-p normalized-visible)
+             (bp/agent-orchestration--claude-ghost-completion-p visible)
              (and (stringp submitted)
                   (equal normalized-visible
                          (bp/agent-orchestration--claude-normalize-prompt
