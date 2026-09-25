@@ -58,7 +58,9 @@ shell's PATH, which is the failure mode worth designing away here."
   "Session id -> vterm buffer, populated for every vterm buffer at creation.")
 
 (defvar bp/agent-sessions (make-hash-table :test 'equal)
-  "Session id -> plist (:buffer :agent-type :status :last-event :updated-at :repo :worktree).
+  "Session id -> plist of live agent state and its terminal buffer.
+Includes agent identity, hook status, repo/worktree, and Claude's most recently
+submitted prompt when its `UserPromptSubmit' hook provided one.
 Populated lazily: an entry only exists once a hook event has fired for it.")
 
 (defvar bp/agent-session-counter 0)
@@ -435,7 +437,17 @@ the body names the agent type, state, and its terminal title (task summary)."
          ;; Path to this session's transcript (Claude includes it on every
          ;; hook, notably SessionStart). Used to auto-detect fork parentage.
          (transcript-path (or (and payload (gethash "transcript_path" payload))
-                              (and existing (plist-get existing :transcript-path)))))
+                              (and existing (plist-get existing :transcript-path))))
+         ;; Claude leaves the submitted text rendered in its composer while a
+         ;; turn starts and sometimes after it stops.  Remember the hook's
+         ;; authoritative value so that retained text is not mistaken for a
+         ;; new human draft.  Other events preserve the last submitted value.
+         (submitted-prompt
+          (or (and (equal agent-type "claude")
+                   (equal event-name "UserPromptSubmit")
+                   payload
+                   (gethash "user_prompt" payload))
+              (and existing (plist-get existing :submitted-prompt)))))
     (when (buffer-live-p buf)
       (let* ((info (bp/agent-session--repo-info (buffer-local-value 'default-directory buf)))
              ;; Parentage, in priority order: what a previous event already
@@ -456,6 +468,7 @@ the body names the agent type, state, and its terminal title (task summary)."
                        :agent-type agent-type
                        :agent-session-id agent-session-id
                        :transcript-path transcript-path
+                       :submitted-prompt submitted-prompt
                        :status status
                        :last-event event-name
                        :updated-at (current-time)
@@ -3848,8 +3861,9 @@ Codex mail uses its native session queue, whether the conversation is running
 or resting, so it never shares the human's terminal composer.  Claude mail uses
 Claude Code's queue-submit action only when its composer is known to be empty.
 Mail that arrives while the human is drafting stays unread until the human
-submits that prompt, then queues behind it.  Plain `status' mail alone waits
-while either agent is running.  `emacs-agent wait' remains the explicit way for
+submits that prompt, then queues behind it.  Claude's composer safety decides
+delivery regardless of message type or stale hook status; Codex retains its
+native-queue steering policy.  `emacs-agent wait' remains the explicit way for
 an agent to collect its own mail."
   :type 'boolean)
 
@@ -4092,13 +4106,16 @@ human draft deliberately does not match."
   "Non-nil when SESSION is a Claude conversation."
   (equal (downcase (format "%s" (plist-get session :agent-type))) "claude"))
 
-(defun bp/agent-orchestration--claude-empty-composer-p (session)
-  "Non-nil when SESSION visibly has Claude's empty composer.
+(defun bp/agent-orchestration--claude-normalize-prompt (text)
+  "Normalize Claude prompt TEXT for rendered-versus-submitted comparison."
+  (string-trim
+   (replace-regexp-in-string "[[:space:]\u00a0]+" " " text)))
+
+(defun bp/agent-orchestration--claude-composer-text (session)
+  "Return SESSION's visibly rendered Claude composer text, or nil if unknown.
 Claude renders the current input between a line beginning with its `❯' prompt
 and a horizontal separator.  Inspect only the most recent prompt near the end
-of the terminal buffer.  A non-empty composer, or an unrecognized display, is
-deliberately not receptive: preserving a human draft matters more than prompt
-mail delivery."
+of the terminal buffer."
   (let ((buf (plist-get session :buffer)))
     (and (buffer-live-p buf)
          (with-current-buffer buf
@@ -4109,10 +4126,27 @@ mail delivery."
                     "^❯[ \t\u00a0]*" (max (point-min) (- (point-max) 4000)) t)
                (let ((input-start (match-end 0)))
                  (and (re-search-forward "^─+[ \t]*$" nil t)
-                      (string-empty-p
-                       (string-trim
-                        (buffer-substring-no-properties
-                         input-start (match-beginning 0))))))))))))
+                      (buffer-substring-no-properties
+                       input-start (match-beginning 0))))))))))
+
+(defun bp/agent-orchestration--claude-receptive-composer-p (session)
+  "Non-nil when SESSION's Claude composer can safely receive agent mail.
+An empty composer is receptive.  Claude also retains the last submitted text
+in the input box during redraws and sometimes after a turn; that exact text is
+receptive too because `UserPromptSubmit' proves it is no longer a draft.
+Anything unrecognized or changed from the submitted prompt is treated as a
+live human draft and left untouched."
+  (let* ((visible (bp/agent-orchestration--claude-composer-text session))
+         (submitted (plist-get session :submitted-prompt))
+         (normalized-visible
+          (and (stringp visible)
+               (bp/agent-orchestration--claude-normalize-prompt visible))))
+    (and normalized-visible
+         (or (string-empty-p normalized-visible)
+             (and (stringp submitted)
+                  (equal normalized-visible
+                         (bp/agent-orchestration--claude-normalize-prompt
+                          submitted)))))))
 
 (defun bp/agent-orchestration--terminal-input (buf string)
   "Send raw terminal input STRING to BUF without paste handling or Enter."
@@ -4405,14 +4439,7 @@ stay idempotent; Codex consumes only after its CLI acknowledges ownership."
         ;; preventing the generic idle paste below from absorbing a draft.
         (when (and
                (or user-prompt-submitted
-                   (bp/agent-orchestration--claude-empty-composer-p session))
-               (or user-prompt-submitted
-                   (not (eq (plist-get session :status) 'running))
-                   (seq-some
-                    (lambda (message)
-                      (member (plist-get message :type)
-                              bp/agent-orchestration-actionable-message-types))
-                    pending))
+                   (bp/agent-orchestration--claude-receptive-composer-p session))
                (bp/agent-orchestration--claude-queue session pending))
           (bp/agent-orchestration--consume pending)
           (bp/agent-sessions--refresh-if-visible)
