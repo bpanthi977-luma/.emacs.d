@@ -392,6 +392,13 @@ The queue-submit key bytes are customizable as
 `bp/agent-orchestration-claude-queue-submit-key` for users who rebind that
 Claude action.
 
+Claude's inline Tab completion also occupies the composer, but it is not a
+draft until the human accepts or edits it. Claude renders that suggestion with
+the terminal's ANSI faint attribute; Eat preserves it as `eat-term-faint`.
+Agent-sessions therefore treats a composer whose entire non-whitespace body is
+faint as empty. A typed prefix is non-faint, so mixed typed-plus-suggested text
+continues to block delivery.
+
 Claude does not always clear submitted text from the rendered composer before
 the hook callback tries delivery; it can retain that text through the turn or
 until the next edit. `UserPromptSubmit` includes the authoritative
