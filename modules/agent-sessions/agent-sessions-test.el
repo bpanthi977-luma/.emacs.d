@@ -92,7 +92,7 @@
             (should (string-match-p "while you were idle" pasted))))
       (kill-buffer buffer))))
 
-(ert-deftest bp/agent-orchestration-status-alone-does-not-queue-running-claude ()
+(ert-deftest bp/agent-orchestration-status-mail-queues-at-empty-running-claude ()
   (let* ((id "terminal")
          (buffer (generate-new-buffer " *claude-delivery-test*"))
          (message (bp/agent-orchestration-test--message "status" "progress"))
@@ -101,6 +101,8 @@
          queued consumed)
     (unwind-protect
         (progn
+          (with-current-buffer buffer
+            (insert "────────────────\n❯\u00a0\n────────────────\n  Opus"))
           (puthash id (list message) bp/agent-orchestration--mail)
           (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
                      (lambda (_) session))
@@ -109,23 +111,27 @@
                     ((symbol-function 'bp/agent-orchestration--claude-queue)
                      (lambda (_ messages) (setq queued messages) t))
                     ((symbol-function 'bp/agent-orchestration--consume)
-                     (lambda (messages) (setq consumed messages))))
-            (should-not (bp/agent-orchestration-deliver id))
-            (should-not queued)
-            (should-not consumed)))
+                     (lambda (messages) (setq consumed messages)))
+                    ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                     #'ignore))
+            (should (eq 'queued (bp/agent-orchestration-deliver id)))
+            (should (equal (list message) queued))
+            (should (equal (list message) consumed))))
       (kill-buffer buffer))))
 
-(ert-deftest bp/agent-orchestration-actionable-mail-queues-empty-running-claude ()
+(ert-deftest bp/agent-orchestration-actionable-mail-queues-after-retained-claude-prompt ()
   (let* ((id "terminal")
          (buffer (generate-new-buffer " *claude-delivery-test*"))
          (message (bp/agent-orchestration-test--message "answer" "decision"))
-         (session (list :status 'running :agent-type 'claude :buffer buffer))
+         (session (list :status 'running :agent-type 'claude :buffer buffer
+                        :submitted-prompt "previous request"))
          (bp/agent-orchestration--mail (make-hash-table :test 'equal))
          queued consumed)
     (unwind-protect
         (progn
           (with-current-buffer buffer
-            (insert "────────────────\n❯\u00a0\n────────────────\n  Opus"))
+            (insert "────────────────\n❯\u00a0previous request\n"
+                    "────────────────\n  Opus"))
           (puthash id (list message) bp/agent-orchestration--mail)
           (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
                      (lambda (_) session))
@@ -205,14 +211,26 @@
     (unwind-protect
         (with-current-buffer buffer
           (insert "────────────────\n❯\u00a0\n────────────────\n  Opus")
-          (should (bp/agent-orchestration--claude-empty-composer-p session))
+          (should (bp/agent-orchestration--claude-receptive-composer-p session))
           (erase-buffer)
           (insert "────────────────\n❯\u00a0first line\n  wrapped line\n"
                   "────────────────\n  Opus")
-          (should-not (bp/agent-orchestration--claude-empty-composer-p session))
+          (should-not
+           (bp/agent-orchestration--claude-receptive-composer-p session))
+          ;; Claude can retain the submitted prompt in the composer after the
+          ;; hook fires.  Visual hard wrapping must not turn that into a draft.
+          (setq session
+                (plist-put session :submitted-prompt "first line wrapped line"))
+          (should (bp/agent-orchestration--claude-receptive-composer-p session))
+          (erase-buffer)
+          (insert "────────────────\n❯\u00a0a genuinely new draft\n"
+                  "────────────────\n  Opus")
+          (should-not
+           (bp/agent-orchestration--claude-receptive-composer-p session))
           (erase-buffer)
           (insert "Claude output without a recognizable composer")
-          (should-not (bp/agent-orchestration--claude-empty-composer-p session)))
+          (should-not
+           (bp/agent-orchestration--claude-receptive-composer-p session)))
       (kill-buffer buffer))))
 
 (ert-deftest bp/agent-orchestration-claude-queue-only-pastes-and-submits ()
