@@ -589,6 +589,39 @@
                     :type 'user-error)
       (should-not visited))))
 
+(ert-deftest bp/agent-sessions-capital-d-initializes-missing-snapshot ()
+  (bp/agent-sessions-test--with-temp-db
+    (let* ((path (make-temp-file "agent-shared-file-"))
+           (session (list :agent-session-id "thread-1"))
+           (key '("session" "thread-1"))
+           visited message-text)
+      (unwind-protect
+          (progn
+            (bp/agent-sessions-test--write-file path "current contents\n")
+            (cl-letf (((symbol-function 'bp/agent-sessions--file-at-point)
+                       (lambda () (list session path (list :path path))))
+                      ((symbol-function 'bp/agent-sessions--set-visited)
+                       (lambda (&rest _) (setq visited t)))
+                      ((symbol-function 'message)
+                       (lambda (format-string &rest args)
+                         (setq message-text
+                               (apply #'format format-string args)))))
+              (bp/agent-sessions-show-file-submission-diff))
+            (let ((snapshot (bp/agent-sessions--file-snapshot-row
+                             (list key) path)))
+              (should snapshot)
+              (should-not (plist-get snapshot :previous-path))
+              (should
+               (equal "current contents\n"
+                      (with-temp-buffer
+                        (insert-file-contents
+                         (plist-get snapshot :current-path))
+                        (buffer-string)))))
+            (should (equal message-text
+                           "Saved current file as its first submitted snapshot"))
+            (should-not visited))
+        (delete-file path)))))
+
 (ert-deftest bp/agent-sessions-capital-d-is-contextual ()
   (let (action file-at-point)
     (cl-letf (((symbol-function 'bp/agent-sessions--file-at-point)
