@@ -411,15 +411,89 @@ the body names the agent type, state, and its terminal title (task summary)."
              (if (eq status 'error) "error" "needs attention")
              title))))
 
+(defun bp/agent-sessions--hook-buffer (transport-id agent-type payload)
+  "Resolve a hook PAYLOAD to its terminal buffer.
+TRANSPORT-ID is the `EMACS_AGENT_SESSION_ID' inherited by the hook process.
+Normally it names the terminal directly.  A shared agent daemon can retain an
+older terminal's environment, however, so prefer an already-known agent
+session id and reject a direct buffer that belongs to a different session.
+As a final fallback, return the unique unresolved AGENT-TYPE terminal whose
+directory matches PAYLOAD's `cwd'; return nil rather than guess if ambiguous."
+  (let* ((agent-sid (or (and payload (gethash "session_id" payload))
+                        (and payload (gethash "conversation_id" payload))
+                        (and payload (gethash "thread_id" payload))))
+         (cwd (and payload (gethash "cwd" payload)))
+         (canonical-cwd (and cwd (ignore-errors
+                                   (bp/agent-sessions--canonical-path cwd))))
+         (direct (gethash transport-id bp/agent-session-id->buffer))
+         (known
+          (and agent-sid
+               (catch 'found
+                 (maphash
+                  (lambda (_id session)
+                    (when (equal agent-sid
+                                 (plist-get session :agent-session-id))
+                      (let ((buf (plist-get session :buffer)))
+                        (when (buffer-live-p buf)
+                          (throw 'found buf)))))
+                  bp/agent-sessions)
+                 nil))))
+    (or known
+        (and (buffer-live-p direct)
+             (let ((existing (gethash transport-id bp/agent-sessions)))
+               (and (or (null agent-sid)
+                        (null (plist-get existing :agent-session-id))
+                        (equal agent-sid
+                               (plist-get existing :agent-session-id)))
+                    (or (null canonical-cwd)
+                        (equal canonical-cwd
+                               (ignore-errors
+                                 (bp/agent-sessions--canonical-path
+                                  (buffer-local-value 'default-directory
+                                                      direct)))))
+                    direct)))
+        (and canonical-cwd
+             (let (candidates)
+               (maphash
+                (lambda (id buf)
+                  (when (buffer-live-p buf)
+                    (let ((existing (gethash id bp/agent-sessions)))
+                      (when (and
+                             ;; A terminal already owned by another durable
+                             ;; session cannot be this hook's origin.
+                             (or (null (plist-get existing :agent-session-id))
+                                 (equal agent-sid
+                                        (plist-get existing :agent-session-id)))
+                             (equal canonical-cwd
+                                    (ignore-errors
+                                      (bp/agent-sessions--canonical-path
+                                       (buffer-local-value 'default-directory
+                                                           buf))))
+                             (equal agent-type
+                                    (or (plist-get existing :agent-type)
+                                        (bp/agent-sessions--foreground-command
+                                         buf))))
+                        (push buf candidates)))))
+                bp/agent-session-id->buffer)
+               (and (= (length candidates) 1) (car candidates)))))))
+
 (defun bp/agent-hook-notify (session-id agent-type payload-file)
-  "Entry point called via emacsclient from the Claude/Codex hook scripts."
-  (let* ((buf (gethash session-id bp/agent-session-id->buffer))
-         (payload (unwind-protect
+  "Entry point called via emacsclient from the Claude/Codex hook scripts.
+SESSION-ID is the terminal id inherited by the hook process.  The payload's
+agent session id and working directory can reroute a stale daemon environment
+to the terminal that actually owns the event."
+  (let* ((payload (unwind-protect
                       (ignore-errors
                         (json-parse-string (with-temp-buffer
                                               (insert-file-contents payload-file)
                                               (buffer-string))))
                     (ignore-errors (delete-file payload-file))))
+         (buf (bp/agent-sessions--hook-buffer session-id agent-type payload))
+         ;; From here onward SESSION-ID must mean the actual terminal being
+         ;; updated, not the possibly stale environment value the hook used.
+         (session-id (or (and (buffer-live-p buf)
+                              (buffer-local-value 'bp/agent-session-id buf))
+                         session-id))
          (event-name (or (and payload (gethash "hook_event_name" payload))
                          (and payload (gethash "type" payload))
                          "unknown"))
