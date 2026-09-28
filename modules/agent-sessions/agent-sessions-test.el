@@ -431,8 +431,13 @@
   "Run BODY with an isolated agent-sessions database."
   (declare (indent 0) (debug t))
   `(let* ((db-file (make-temp-file "agent-sessions-test-"))
+          (snapshot-directory
+           (make-temp-file "agent-sessions-snapshots-test-" t))
           (bp/agent-sessions-db-file db-file)
+          (bp/agent-sessions-file-snapshot-directory snapshot-directory)
           (bp/agent-sessions--db nil)
+          (bp/agent-sessions--shared-files nil)
+          (bp/agent-sessions--shared-paths nil)
           (bp/agent-sessions--shared-links nil))
      (unwind-protect
          (progn ,@body)
@@ -441,7 +446,163 @@
        (dolist (path (list db-file (concat db-file "-wal")
                            (concat db-file "-shm")))
          (when (file-exists-p path)
-           (delete-file path))))))
+           (delete-file path)))
+       (delete-directory snapshot-directory t))))
+
+(defun bp/agent-sessions-test--write-file (path contents)
+  "Replace PATH with CONTENTS for a shared-file test."
+  (with-temp-file path
+    (insert contents)))
+
+(ert-deftest bp/agent-sessions-share-file-keeps-latest-two-submissions ()
+  (bp/agent-sessions-test--with-temp-db
+    (let* ((source (make-temp-file "agent-shared-file-" nil ".md"))
+           (session (list :agent-session-id "thread-1"))
+           (key '("session" "thread-1")))
+      (unwind-protect
+          (progn
+            (bp/agent-sessions-test--write-file source "first\n")
+            (let ((first (bp/agent-sessions--share-file session source nil)))
+              (should (equal source (plist-get first :path))))
+            (let ((snapshot (bp/agent-sessions--file-snapshot-row
+                             (list key) source)))
+              (should-not (plist-get snapshot :previous-path))
+              (should (equal "first\n"
+                             (with-temp-buffer
+                               (insert-file-contents
+                                (plist-get snapshot :current-path))
+                               (buffer-string)))))
+            (bp/agent-sessions-test--write-file source "second\n")
+            (bp/agent-sessions--share-file session source nil)
+            (bp/agent-sessions-test--write-file source "third\n")
+            (bp/agent-sessions--share-file session source nil)
+            (let ((snapshot (bp/agent-sessions--file-snapshot-row
+                             (list key) source)))
+              (should (equal "second\n"
+                             (with-temp-buffer
+                               (insert-file-contents
+                                (plist-get snapshot :previous-path))
+                               (buffer-string))))
+              (should (equal "third\n"
+                             (with-temp-buffer
+                               (insert-file-contents
+                                (plist-get snapshot :current-path))
+                               (buffer-string)))))
+            (should
+             (equal '((1))
+                    (sqlite-select
+                     (bp/agent-sessions--db)
+                     "SELECT COUNT(*) FROM shared_file_snapshots"))))
+        (delete-file source)))))
+
+(ert-deftest bp/agent-sessions-file-snapshots-follow-durable-session-id ()
+  (bp/agent-sessions-test--with-temp-db
+    (let ((source (make-temp-file "agent-shared-file-"))
+          (buffer (generate-new-buffer "agent-snapshot-terminal")))
+      (unwind-protect
+          (let ((terminal-session (list :buffer buffer)))
+            (bp/agent-sessions-test--write-file source "before id\n")
+            (bp/agent-sessions--share-file terminal-session source nil)
+            (bp/agent-sessions-test--write-file source "after id\n")
+            (let* ((durable-session
+                    (list :buffer buffer :agent-session-id "thread-2"))
+                   (durable-key '("session" "thread-2")))
+              (bp/agent-sessions--share-file durable-session source nil)
+              (let ((snapshot (bp/agent-sessions--file-snapshot-row
+                               (list durable-key) source)))
+                (should (equal "before id\n"
+                               (with-temp-buffer
+                                 (insert-file-contents
+                                  (plist-get snapshot :previous-path))
+                                 (buffer-string))))
+                (should (equal "after id\n"
+                               (with-temp-buffer
+                                 (insert-file-contents
+                                  (plist-get snapshot :current-path))
+                                 (buffer-string)))))
+              (should
+               (equal '((0))
+                      (sqlite-select
+                       (bp/agent-sessions--db)
+                       "SELECT COUNT(*) FROM shared_file_snapshots
+                         WHERE kind = 'session' AND key = ?"
+                       (list (buffer-name buffer)))))))
+        (kill-buffer buffer)
+        (delete-file source)))))
+
+(ert-deftest bp/agent-sessions-show-submission-diff-compares-cache-then-reads ()
+  (let* ((path "/outside-git/plan.md")
+         (previous (make-temp-file "previous--plan-"))
+         (current (make-temp-file "current--plan-"))
+         (session (list :agent-session-id "thread-1"))
+         (buffer (get-buffer-create "*Agent submission diff: plan.md*"))
+         events)
+    (unwind-protect
+        (cl-letf (((symbol-function 'bp/agent-sessions--file-at-point)
+                   (lambda () (list session path (list :path path))))
+                  ((symbol-function 'bp/agent-sessions--file-snapshot-row)
+                   (lambda (keys candidate)
+                     (push (list 'snapshot keys candidate) events)
+                     (list :previous-path previous :current-path current)))
+                  ((symbol-function 'diff-no-select)
+                   (lambda (old new switches no-async destination)
+                     (push (list 'diff old new switches no-async destination)
+                           events)
+                     buffer))
+                  ((symbol-function 'bp/agent-sessions--set-visited)
+                   (lambda (match-fn visitedp)
+                     (push (list 'visited
+                                 (funcall match-fn (list :path path))
+                                 visitedp)
+                           events)
+                     t))
+                  ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                   (lambda () (push '(refresh) events)))
+                  ((symbol-function 'pop-to-buffer)
+                   (lambda (shown) (push (list 'pop shown) events))))
+          (bp/agent-sessions-show-file-submission-diff)
+          (should
+           (equal
+            (nreverse events)
+            `((snapshot (("session" "thread-1")) ,path)
+              (diff ,previous ,current "-u" t ,buffer)
+              (visited t t)
+              (refresh)
+              (pop ,buffer)))))
+      (kill-buffer buffer)
+      (delete-file previous)
+      (delete-file current))))
+
+(ert-deftest bp/agent-sessions-show-submission-diff-needs-two-versions ()
+  (let ((path "/outside-git/plan.md")
+        visited)
+    (cl-letf (((symbol-function 'bp/agent-sessions--file-at-point)
+               (lambda ()
+                 (list (list :agent-session-id "thread-1") path
+                       (list :path path))))
+              ((symbol-function 'bp/agent-sessions--file-snapshot-row)
+               (lambda (&rest _)
+                 (list :current-path "/cache/current--plan.md")))
+              ((symbol-function 'bp/agent-sessions--set-visited)
+               (lambda (&rest _) (setq visited t))))
+      (should-error (bp/agent-sessions-show-file-submission-diff)
+                    :type 'user-error)
+      (should-not visited))))
+
+(ert-deftest bp/agent-sessions-capital-d-is-contextual ()
+  (let (action file-at-point)
+    (cl-letf (((symbol-function 'bp/agent-sessions--file-at-point)
+               (lambda () file-at-point))
+              ((symbol-function 'bp/agent-sessions-show-file-submission-diff)
+               (lambda () (setq action 'diff)))
+              ((symbol-function 'bp/agent-sessions-detach-parent)
+               (lambda () (setq action 'detach))))
+      (setq file-at-point '(session path file))
+      (bp/agent-sessions-submission-diff-or-detach-parent)
+      (should (eq action 'diff))
+      (setq action nil file-at-point nil)
+      (bp/agent-sessions-submission-diff-or-detach-parent)
+      (should (eq action 'detach)))))
 
 (ert-deftest bp/agent-sessions-shared-link-is-idempotent-and-current-per-kind ()
   (bp/agent-sessions-test--with-temp-db
