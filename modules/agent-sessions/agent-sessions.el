@@ -691,6 +691,30 @@ agent hook yet, or nil if no live buffer is registered for ID."
         (and (buffer-live-p buf)
              (bp/agent-sessions--terminal-session buf)))))
 
+(defun bp/agent-sessions--session-for-agent-id (agent-session-id)
+  "Return the live session whose durable id is AGENT-SESSION-ID.
+Unlike a terminal id, this identity belongs to the Claude or Codex session and
+therefore remains trustworthy when a shared agent daemon has retained an older
+terminal's environment."
+  (catch 'found
+    (maphash
+     (lambda (_id session)
+       (when (and (equal agent-session-id
+                         (plist-get session :agent-session-id))
+                  (buffer-live-p (plist-get session :buffer)))
+         (throw 'found session)))
+     bp/agent-sessions)
+    nil))
+
+(defun bp/agent-sessions--session-for-share (terminal-id agent-session-id)
+  "Resolve a share command's TERMINAL-ID and AGENT-SESSION-ID.
+Prefer a supplied durable agent identity.  If it is unknown, return nil rather
+than fall back to TERMINAL-ID: a stale daemon environment can name a different
+live terminal, and attaching work to that session would be worse than failing."
+  (if (and agent-session-id (not (string-empty-p agent-session-id)))
+      (bp/agent-sessions--session-for-agent-id agent-session-id)
+    (bp/agent-sessions--session-for-id terminal-id)))
+
 (defun bp/agent-sessions--session-title (session)
   "The title for SESSION's buffer: the user override if any, else the OSC title."
   (let ((buf (plist-get session :buffer)))
@@ -2306,19 +2330,25 @@ Do not create a buffer for PATH, and never replace unsaved buffer changes."
         (revert-buffer t t)))))
 
 ;;;###autoload
-(defun bp/agent-sessions-share-file (session-id path &optional label)
+(defun bp/agent-sessions-share-file (session-id path &optional label
+                                                agent-session-id)
   "Attach PATH to the agent session running in terminal SESSION-ID.
 The `emacs-share file' entry point calls over emacsclient, so SESSION-ID is
-the terminal's EMACS_AGENT_SESSION_ID — the id the shell has — and resolving it
-to whatever session is running there happens here, the same split the hook path
-makes.  If an unmodified buffer already visits PATH, refresh it from disk;
-modified buffers are left alone so sharing can never discard unsaved work.
+the terminal's EMACS_AGENT_SESSION_ID — the id the shell has.  When
+AGENT-SESSION-ID is supplied, it is the agent's durable thread identity and
+takes precedence because a shared daemon can retain another terminal's id.
+If an unmodified buffer already visits PATH, refresh it from disk; modified
+buffers are left alone so sharing can never discard unsaved work.
 Returns a string for the caller to print: emacsclient is the agent's only
 channel back, so a failure has to be reported in the value, not signalled."
-  (let ((session (bp/agent-sessions--session-for-id session-id)))
+  (let ((session (bp/agent-sessions--session-for-share
+                  session-id agent-session-id)))
     (cond
      ((null session)
-      (format "No Emacs terminal registered for session id %s" session-id))
+      (if (and agent-session-id (not (string-empty-p agent-session-id)))
+          (format "No Emacs agent session registered for agent id %s"
+                  agent-session-id)
+        (format "No Emacs terminal registered for session id %s" session-id)))
      ((not (file-exists-p path))
       (format "No such file: %s" path))
      (t
@@ -2514,14 +2544,21 @@ unvisited, while preserving its original display position."
     changed))
 
 ;;;###autoload
-(defun bp/agent-sessions-share-link (session-id kind url &optional label)
+(defun bp/agent-sessions-share-link (session-id kind url &optional label
+                                                agent-session-id)
   "Attach a typed external link to the session in terminal SESSION-ID.
 KIND is `linear' or `pr'; URL must be HTTP(S).  Re-registering the same value
-is idempotent.  Returns a printable status string for `emacs-share link'."
-  (let ((session (bp/agent-sessions--session-for-id session-id)))
+is idempotent.  AGENT-SESSION-ID, when supplied, is the durable agent thread
+identity and takes precedence over SESSION-ID.  Returns a printable status
+string for `emacs-share link'."
+  (let ((session (bp/agent-sessions--session-for-share
+                  session-id agent-session-id)))
     (cond
      ((null session)
-      (format "No Emacs terminal registered for session id %s" session-id))
+      (if (and agent-session-id (not (string-empty-p agent-session-id)))
+          (format "No Emacs agent session registered for agent id %s"
+                  agent-session-id)
+        (format "No Emacs terminal registered for session id %s" session-id)))
      ((not (assoc kind bp/agent-sessions--link-kind-labels))
       (format "Unknown link kind `%s'; expected linear or pr" kind))
      ((not (string-match-p "\\`https?://[^[:space:]]+\\'" url))
