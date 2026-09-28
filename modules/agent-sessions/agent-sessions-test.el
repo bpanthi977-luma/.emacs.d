@@ -145,6 +145,28 @@
             (should-not (string-match-p "older-codex-id" expression))))
       (delete-directory directory t))))
 
+(ert-deftest bp/agent-sessions-session-row-omits-raw-hook-event ()
+  (with-temp-buffer
+    (bp/agent-sessions-mode)
+    (let ((inhibit-read-only t)
+          (bp/agent-sessions--row-status nil)
+          (entry (list :id "terminal"
+                       :title "Investigate the issue"
+                       :session (list :agent-type "codex"
+                                      :status 'running
+                                      :last-event "PreToolUse"))))
+      (cl-letf (((symbol-function 'bp/agent-sessions--session-state)
+                 (lambda (_) nil))
+                ((symbol-function 'bp/agent-orchestration--row-badge)
+                 (lambda (_) ""))
+                ((symbol-function 'bp/agent-sessions--insert-note) #'ignore)
+                ((symbol-function 'bp/agent-sessions--insert-links) #'ignore)
+                ((symbol-function 'bp/agent-sessions--insert-files) #'ignore))
+        (bp/agent-sessions--insert-session entry)
+        (should (string-match-p "running" (buffer-string)))
+        (should (string-match-p "Investigate the issue" (buffer-string)))
+        (should-not (string-match-p "PreToolUse" (buffer-string)))))))
+
 (ert-deftest bp/agent-orchestration-status-alone-does-not-steer-running-codex ()
   (let* ((id "terminal")
          (message (bp/agent-orchestration-test--message "status" "progress"))
