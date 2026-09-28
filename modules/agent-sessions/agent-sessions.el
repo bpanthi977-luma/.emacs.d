@@ -2544,34 +2544,40 @@ Git repository or has no committed history, leave its unread state unchanged."
 (defun bp/agent-sessions-show-file-submission-diff ()
   "Show the diff between the latest two submissions of the file at point.
 Unlike `bp/agent-sessions-show-file-diff', this compares cached copies made at
-share time and therefore works without Git and across uncommitted edits.  Mark
-the file read only after a diff is successfully produced."
+share time and therefore works without Git and across uncommitted edits.  If
+the file predates snapshot support, save its current contents as the first
+snapshot instead.  Mark the file read only after a diff is successfully
+produced."
   (interactive)
   (pcase (bp/agent-sessions--file-at-point)
     (`(,session ,path ,_file)
-     (let* ((snapshot
-             (bp/agent-sessions--file-snapshot-row
-              (bp/agent-sessions--session-note-keys session) path))
-            (previous (plist-get snapshot :previous-path))
-            (current (plist-get snapshot :current-path)))
-       (unless snapshot
-         (user-error "File has no submitted snapshot"))
-       (unless previous
-         (user-error "File has only one submitted version"))
-       (unless (and (file-exists-p previous) (file-exists-p current))
-         (user-error "Submitted-version cache is incomplete"))
-       (let* ((name (file-name-nondirectory path))
-              (buffer-name (format "*Agent submission diff: %s*" name))
-              (buffer (diff-no-select previous current "-u" t
-                                      (get-buffer-create buffer-name))))
-         (with-current-buffer buffer
-           (setq-local header-line-format
-                       (format "Submitted versions of %s"
-                               (abbreviate-file-name path))))
-         (when (bp/agent-sessions--set-visited
-                (lambda (file) (equal (plist-get file :path) path)) t)
-           (bp/agent-sessions--refresh-if-visible))
-         (pop-to-buffer buffer))))
+     (let* ((keys (bp/agent-sessions--session-note-keys session))
+            (snapshot (bp/agent-sessions--file-snapshot-row keys path)))
+       (if (not snapshot)
+           (progn
+             (unless (file-exists-p path)
+               (user-error "File no longer exists: %s"
+                           (abbreviate-file-name path)))
+             (bp/agent-sessions--snapshot-file (car keys) path)
+             (message "Saved current file as its first submitted snapshot"))
+         (let ((previous (plist-get snapshot :previous-path))
+               (current (plist-get snapshot :current-path)))
+           (unless previous
+             (user-error "File has only one submitted version"))
+           (unless (and (file-exists-p previous) (file-exists-p current))
+             (user-error "Submitted-version cache is incomplete"))
+           (let* ((name (file-name-nondirectory path))
+                  (buffer-name (format "*Agent submission diff: %s*" name))
+                  (buffer (diff-no-select previous current "-u" t
+                                          (get-buffer-create buffer-name))))
+             (with-current-buffer buffer
+               (setq-local header-line-format
+                           (format "Submitted versions of %s"
+                                   (abbreviate-file-name path))))
+             (when (bp/agent-sessions--set-visited
+                    (lambda (file) (equal (plist-get file :path) path)) t)
+               (bp/agent-sessions--refresh-if-visible))
+             (pop-to-buffer buffer))))))
     (_ (message "No shared file at point."))))
 
 (defface bp/agent-session-file-unvisited
