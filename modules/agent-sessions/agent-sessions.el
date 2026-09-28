@@ -10,6 +10,7 @@
 (require 'seq)
 (require 'json)
 (require 'server)
+(require 'diff)
 ;; Not autoloaded: `with-sqlite-transaction' is a macro in sqlite.el, so
 ;; without this the persistent store's writes fail at *call* time, long after
 ;; the file has loaded cleanly.
@@ -1194,6 +1195,18 @@ order (e.g. for buffers with no creation stamp)."
        visited_at INTEGER,
        PRIMARY KEY (kind, key, path))"
 
+    ;; The two most recent copies made when an agent shared a file.  The
+    ;; contents live outside SQLite in `bp/agent-sessions-file-snapshot-directory';
+    ;; this table only follows the same durable owner identity as the file row.
+    "CREATE TABLE IF NOT EXISTS shared_file_snapshots (
+       kind          TEXT    NOT NULL,
+       key           TEXT    NOT NULL,
+       path          TEXT    NOT NULL,
+       previous_path TEXT,
+       current_path  TEXT    NOT NULL,
+       updated_at    INTEGER NOT NULL,
+       PRIMARY KEY (kind, key, path))"
+
     ;; External work items an agent wants to keep visible beside its shared
     ;; files.  There is one current URL per link_kind for a session: an issue
     ;; workflow can register its Linear issue first and fill in its PR later,
@@ -1895,6 +1908,18 @@ note by hand is tedious, since \\[kill-line] only kills the line point is on."
 ;;   row may move when something meaningful changes, and a re-share is not that;
 ;;   a row jumping to the bottom of the list is the thing the user is trying to
 ;;   aim at moving out from under them.
+;;
+;; - **Every share snapshots the file before returning to the agent.**  The
+;;   cache retains the two most recently submitted contents for that session
+;;   and path, independent of Git.  This is deliberately done in the share
+;;   path rather than when `D' is pressed: by then the live file may have been
+;;   edited again, and would no longer be the version the agent handed over.
+
+(defcustom bp/agent-sessions-file-snapshot-directory
+  (expand-file-name ".cache/agent-sessions-file-snapshots/"
+                    user-emacs-directory)
+  "Directory containing the latest two submitted versions of shared files."
+  :type 'directory)
 
 (defvar bp/agent-sessions--shared-files nil
   "Hash table KEY -> list of shared-file plists, or nil before first load.
@@ -2001,6 +2026,96 @@ window between that and the next write (which collapses them)."
                      (plist-get file :updated-at)
                      (plist-get file :visited-at)))))
 
+(defun bp/agent-sessions--file-snapshot-row (keys path)
+  "Return the first snapshot row for PATH owned by one of KEYS.
+KEYS are ordered from most to least durable.  The result is a plist containing
+`:key', `:previous-path', `:current-path', and `:updated-at'."
+  (let ((db (bp/agent-sessions--db)))
+    (seq-some
+     (lambda (key)
+       (when-let ((row
+                   (car (sqlite-select
+                         db
+                         "SELECT previous_path, current_path, updated_at
+                            FROM shared_file_snapshots
+                           WHERE kind = ? AND key = ? AND path = ?"
+                         (append key (list path))))))
+         (list :key key
+               :previous-path (nth 0 row)
+               :current-path (nth 1 row)
+               :updated-at (nth 2 row))))
+     keys)))
+
+(defun bp/agent-sessions--file-snapshots-collapse (keys)
+  "Move snapshot rows stored under the less durable KEYS onto (car KEYS).
+An existing row under the primary key wins, matching the shared-file collapse
+rule.  Snapshot files themselves need not move because their paths are stored
+in the database."
+  (when-let ((primary (car keys)))
+    (let ((db (bp/agent-sessions--db)))
+      (dolist (key (cdr keys))
+        (sqlite-execute
+         db
+         "INSERT OR IGNORE INTO shared_file_snapshots
+            (kind, key, path, previous_path, current_path, updated_at)
+          SELECT ?, ?, path, previous_path, current_path, updated_at
+            FROM shared_file_snapshots WHERE kind = ? AND key = ?"
+         (append primary key))
+        (sqlite-execute
+         db "DELETE FROM shared_file_snapshots WHERE kind = ? AND key = ?"
+         key)))))
+
+(defun bp/agent-sessions--file-snapshot-cache-directory (key path)
+  "Return the private cache directory for the shared PATH owned by KEY."
+  (expand-file-name
+   (secure-hash 'sha256 (prin1-to-string (append key (list path))))
+   bp/agent-sessions-file-snapshot-directory))
+
+(defun bp/agent-sessions--snapshot-file (key path)
+  "Save PATH as the current submitted version owned by KEY.
+The formerly current copy becomes the previous copy.  Return the new snapshot
+row plist.  A missing cache file is treated like a first share, since a cache
+may be cleared independently of the database."
+  (let* ((existing (bp/agent-sessions--file-snapshot-row (list key) path))
+         (old-current (plist-get existing :current-path))
+         (directory (bp/agent-sessions--file-snapshot-cache-directory key path))
+         (basename (file-name-nondirectory path))
+         (previous (expand-file-name (concat "previous--" basename) directory))
+         (current (expand-file-name (concat "current--" basename) directory))
+         incoming)
+    (make-directory directory t)
+    (set-file-modes directory #o700)
+    (unwind-protect
+        (progn
+          ;; Copy the new contents before rotating the old pair.  If this
+          ;; fails, the last successful submission remains intact.
+          (setq incoming
+                (make-temp-file (expand-file-name ".incoming-" directory)))
+          (copy-file path incoming t)
+          (set-file-modes incoming #o600)
+          (if (and old-current (file-exists-p old-current))
+              (progn
+                (copy-file old-current previous t)
+                (set-file-modes previous #o600))
+            (setq previous nil))
+          (rename-file incoming current t)
+          (setq incoming nil)
+          (let ((now (bp/agent-sessions--now)))
+            (sqlite-execute
+             (bp/agent-sessions--db)
+             "INSERT INTO shared_file_snapshots
+                (kind, key, path, previous_path, current_path, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT(kind, key, path) DO UPDATE
+                SET previous_path = excluded.previous_path,
+                    current_path  = excluded.current_path,
+                    updated_at    = excluded.updated_at"
+             (append key (list path previous current now)))
+            (list :key key :previous-path previous :current-path current
+                  :updated-at now)))
+      (when (and incoming (file-exists-p incoming))
+        (delete-file incoming)))))
+
 (defun bp/agent-sessions--files-collapse (keys)
   "Move file rows stored under the less durable KEYS onto (car KEYS).
 The same tidying `bp/agent-sessions--note-set' does, and for the same reason: a
@@ -2012,6 +2127,7 @@ the primary key wins, so this can never undo a newer share."
          (db (bp/agent-sessions--db))
          (kept (gethash primary table))
          (moved nil))
+    (bp/agent-sessions--file-snapshots-collapse keys)
     (dolist (key (cdr keys))
       (when-let ((files (gethash key table)))
         (dolist (f files)
@@ -2041,6 +2157,7 @@ at the original share so the row does not move."
     (unless keys
       (error "Session has no durable identity to attach a file to"))
     (bp/agent-sessions--files-collapse keys)
+    (bp/agent-sessions--snapshot-file (car keys) path)
     (let* ((table (bp/agent-sessions--shared-files-table))
            (primary (car keys))
            (files (gethash primary table))
@@ -2422,6 +2539,39 @@ Git repository or has no committed history, leave its unread state unchanged."
        (when (bp/agent-sessions--set-visited
               (lambda (file) (equal (plist-get file :path) path)) t)
          (bp/agent-sessions--refresh-if-visible))))
+    (_ (message "No shared file at point."))))
+
+(defun bp/agent-sessions-show-file-submission-diff ()
+  "Show the diff between the latest two submissions of the file at point.
+Unlike `bp/agent-sessions-show-file-diff', this compares cached copies made at
+share time and therefore works without Git and across uncommitted edits.  Mark
+the file read only after a diff is successfully produced."
+  (interactive)
+  (pcase (bp/agent-sessions--file-at-point)
+    (`(,session ,path ,_file)
+     (let* ((snapshot
+             (bp/agent-sessions--file-snapshot-row
+              (bp/agent-sessions--session-note-keys session) path))
+            (previous (plist-get snapshot :previous-path))
+            (current (plist-get snapshot :current-path)))
+       (unless snapshot
+         (user-error "File has no submitted snapshot"))
+       (unless previous
+         (user-error "File has only one submitted version"))
+       (unless (and (file-exists-p previous) (file-exists-p current))
+         (user-error "Submitted-version cache is incomplete"))
+       (let* ((name (file-name-nondirectory path))
+              (buffer-name (format "*Agent submission diff: %s*" name))
+              (buffer (diff-no-select previous current "-u" t
+                                      (get-buffer-create buffer-name))))
+         (with-current-buffer buffer
+           (setq-local header-line-format
+                       (format "Submitted versions of %s"
+                               (abbreviate-file-name path))))
+         (when (bp/agent-sessions--set-visited
+                (lambda (file) (equal (plist-get file :path) path)) t)
+           (bp/agent-sessions--refresh-if-visible))
+         (pop-to-buffer buffer))))
     (_ (message "No shared file at point."))))
 
 (defface bp/agent-session-file-unvisited
@@ -3019,6 +3169,15 @@ or `codex fork' by hand)."
                  bp/agent-sessions))
       (bp/agent-sessions--refresh)
       (message "Detached from %s." (cdr parent))))))
+
+(defun bp/agent-sessions-submission-diff-or-detach-parent ()
+  "Diff submitted file versions at point, or detach a session's fork parent.
+This keeps `D' contextual: file rows use the submitted-version history, while
+the existing session-row action remains available on every other row."
+  (interactive)
+  (if (bp/agent-sessions--file-at-point)
+      (bp/agent-sessions-show-file-submission-diff)
+    (bp/agent-sessions-detach-parent)))
 
 (defun bp/agent-sessions-edit-title ()
   "Edit the title of the session at point.
@@ -5109,7 +5268,8 @@ out one that is already taken — or hide one that just became available."
 (define-key bp/agent-sessions-mode-map (kbd "k") #'bp/agent-sessions-kill)
 (define-key bp/agent-sessions-mode-map (kbd "b") #'bp/agent-sessions-branch)
 (define-key bp/agent-sessions-mode-map (kbd "B") #'bp/agent-sessions-mark-parent)
-(define-key bp/agent-sessions-mode-map (kbd "D") #'bp/agent-sessions-detach-parent)
+(define-key bp/agent-sessions-mode-map (kbd "D")
+  #'bp/agent-sessions-submission-diff-or-detach-parent)
 (define-key bp/agent-sessions-mode-map (kbd "t") #'bp/agent-sessions-cycle-state)
 (define-key bp/agent-sessions-mode-map (kbd "SPC") #'bp/agent-sessions-edit-title)
 (define-key bp/agent-sessions-mode-map (kbd "u") #'bp/agent-sessions-mark-unread)
