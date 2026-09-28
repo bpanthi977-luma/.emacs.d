@@ -7,6 +7,69 @@
   (list :id (concat "test-" subject) :from "sender" :from-label "sender"
         :type type :subject subject :body "" :files "" :report "" :read nil))
 
+(ert-deftest bp/agent-hook-routes-stale-daemon-id-to-unresolved-terminal ()
+  (let* ((directory (make-temp-file "agent-hook-worktree-" t))
+         (target (generate-new-buffer " *agent-hook-target*"))
+         (other (generate-new-buffer " *agent-hook-other*"))
+         (payload-file (make-temp-file "agent-hook-payload-"))
+         (bp/agent-session-id->buffer (make-hash-table :test 'equal))
+         (bp/agent-sessions (make-hash-table :test 'equal))
+         (bp/agent-session-notify-on-attention nil)
+         logged)
+    (unwind-protect
+        (progn
+          (with-current-buffer target
+            (setq-local bp/agent-session-id "actual-terminal")
+            (setq default-directory (file-name-as-directory directory)))
+          (with-current-buffer other
+            (setq-local bp/agent-session-id "other-terminal")
+            (setq default-directory (file-name-as-directory directory)))
+          (puthash "actual-terminal" target bp/agent-session-id->buffer)
+          (puthash "other-terminal" other bp/agent-session-id->buffer)
+          ;; A terminal in the same worktree already owned by another thread
+          ;; must not make routing ambiguous.
+          (puthash "other-terminal"
+                   (list :buffer other :agent-type "codex"
+                         :agent-session-id "other-thread")
+                   bp/agent-sessions)
+          (with-temp-file payload-file
+            (insert
+             (json-serialize
+              (let ((payload (make-hash-table :test 'equal)))
+                (puthash "hook_event_name" "Stop" payload)
+                (puthash "session_id" "actual-thread" payload)
+                (puthash "cwd" directory payload)
+                payload))))
+          (cl-letf (((symbol-function 'bp/agent-sessions--foreground-command)
+                     (lambda (buf)
+                       (and (eq buf target) "codex")))
+                    ((symbol-function 'bp/agent-session--repo-info)
+                     (lambda (_)
+                       (list :repo "repo" :repo-root directory
+                             :worktree "worktree"
+                             :worktree-path directory)))
+                    ((symbol-function 'bp/agent-sessions--log-update)
+                     (lambda (buf type sid)
+                       (setq logged (list buf type sid))))
+                    ((symbol-function 'bp/agent-orchestration--hydrate) #'ignore)
+                    ((symbol-function 'bp/agent-orchestration-deliver) #'ignore)
+                    ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                     #'ignore))
+            ;; The inherited daemon id no longer names any live terminal.
+            (bp/agent-hook-notify "stale-terminal" "codex" payload-file))
+          (let ((session (gethash "actual-terminal" bp/agent-sessions)))
+            (should (equal "actual-thread"
+                           (plist-get session :agent-session-id)))
+            (should (eq target (plist-get session :buffer)))
+            (should (eq 'needs-attention (plist-get session :status))))
+          (should-not (gethash "stale-terminal" bp/agent-sessions))
+          (should (equal (list target "codex" "actual-thread") logged)))
+      (when (file-exists-p payload-file)
+        (delete-file payload-file))
+      (kill-buffer target)
+      (kill-buffer other)
+      (delete-directory directory t))))
+
 (ert-deftest bp/agent-orchestration-status-alone-does-not-steer-running-codex ()
   (let* ((id "terminal")
          (message (bp/agent-orchestration-test--message "status" "progress"))
