@@ -199,6 +199,33 @@ emacs-agent send --to <worker-id> --type answer --subject "<the decision>" --bod
 A `blocked` message is not blocking: the worker gave up and stopped. Decide
 whether to respawn with a better brief, take the work yourself, or ask the human.
 
+### Keep human decisions from getting buried
+
+Maintain a durable coordinator-side ledger of every question or decision that
+still requires the human's answer. A newer status, answer, or completion message
+does not supersede an older unresolved decision unless it actually resolves or
+invalidates it.
+
+Whenever the ledger is nonempty, end every user-facing status update and final
+handoff with a numbered section in this form:
+
+```text
+Pending your decisions:
+1. <decision and why it matters>
+2. <decision and why it matters>
+```
+
+Repeat unresolved items across turns until the human explicitly answers them or
+the underlying work makes them inapplicable. When the human chooses to discuss
+an item directly with a worker, keep it on the list and label that direct
+conversation as its owner until the worker reports the decision. Remove an item
+only after recording its resolution and routing it to the affected workers.
+
+Do not burden the human with routine coordination choices already settled by
+their standing instructions. Apply those instructions yourself and reserve the
+ledger for genuine product, scope, architecture, approval, or explicitly
+human-gated operational decisions.
+
 `send` also accepts the old terminal id of a killed resumable session. If that
 conversation is already live under a new id, the message is routed there. If it
 is still dead, Emacs resumes it in a new worker terminal, nests it under the

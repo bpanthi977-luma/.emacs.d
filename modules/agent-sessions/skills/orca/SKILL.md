@@ -35,6 +35,13 @@ so it cannot drift from the tool it documents. Load it now, then follow it:
 Read whichever applies before running any other `emacs-agent` verb. If both
 apply (you are a worker that needs to spawn workers of its own), read both.
 
+While coordinating, maintain a durable list of every question or decision that
+still requires the human's answer. Agent mail and later status updates must not
+push those items out of view: include a numbered `Pending your decisions:`
+section in every user-facing status or handoff until each item is explicitly
+answered or becomes inapplicable. Handle routine choices already determined by
+the human's standing instructions yourself instead of adding them to the list.
+
 Agent mail is persisted immediately. Codex uses its native session queue;
 Claude stashes and restores any human draft around its queue-submit action.
 Questions, answers, blocked reports, and done reports can steer a running
