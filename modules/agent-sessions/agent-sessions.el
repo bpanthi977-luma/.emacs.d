@@ -969,7 +969,6 @@ indentation conveys the relationship."
                    ('error "✖ ")
                    (_ "  ")))
          (title (or (plist-get entry :title) ""))
-         (last-event (plist-get session :last-event))
          (branched-from (plist-get session :branched-from))
          (indent (make-string (* 2 (or depth 0)) ?\s)))
     ;; Record what this row *shows*, for `N'/`P' (see the variable's docstring).
@@ -983,9 +982,8 @@ indentation conveys the relationship."
          (concat "    " indent marker
                  (format "%-7s %-16s " (plist-get session :agent-type) status))
          (bp/agent-sessions--session-state session)
-         (format "%s%s%s%s\n"
+         (format "%s%s%s\n"
                  title
-                 (if last-event (format " (%s)" last-event) "")
                  (bp/agent-orchestration--row-badge id)
                  (if (and branched-from (not suppress-parent-note))
                      (format "  ↳ from %s" (cdr branched-from))
