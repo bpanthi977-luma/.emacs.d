@@ -70,6 +70,81 @@
       (kill-buffer other)
       (delete-directory directory t))))
 
+(ert-deftest bp/agent-sessions-share-file-prefers-durable-agent-id ()
+  (let* ((source (make-temp-file "agent-share-routing-"))
+         (target-buffer (generate-new-buffer " *agent-share-target*"))
+         (wrong-buffer (generate-new-buffer " *agent-share-wrong*"))
+         (target-session (list :buffer target-buffer
+                               :agent-session-id "target-thread"))
+         (wrong-session (list :buffer wrong-buffer
+                              :agent-session-id "wrong-thread"))
+         (bp/agent-sessions (make-hash-table :test 'equal))
+         shared-with)
+    (unwind-protect
+        (progn
+          ;; The daemon's inherited terminal id is live, but belongs to a
+          ;; different session.  The durable agent id must win.
+          (puthash "actual-terminal" target-session bp/agent-sessions)
+          (puthash "stale-terminal" wrong-session bp/agent-sessions)
+          (cl-letf (((symbol-function 'bp/agent-sessions--share-file)
+                     (lambda (session _path _label)
+                       (setq shared-with session)))
+                    ((symbol-function
+                      'bp/agent-sessions--revert-shared-file-buffer)
+                     #'ignore)
+                    ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                     #'ignore))
+            (should
+             (string-prefix-p
+              "Shared "
+              (bp/agent-sessions-share-file
+               "stale-terminal" source "handoff" "target-thread")))
+            (should (eq shared-with target-session))
+            (setq shared-with nil)
+            (should
+             (equal
+              "No Emacs agent session registered for agent id missing-thread"
+              (bp/agent-sessions-share-file
+               "stale-terminal" source "handoff" "missing-thread")))
+            (should-not shared-with)))
+      (delete-file source)
+      (kill-buffer target-buffer)
+      (kill-buffer wrong-buffer))))
+
+(ert-deftest bp/agent-sessions-emacs-share-passes-codex-thread-id ()
+  (let* ((directory (make-temp-file "agent-share-cli-" t))
+         (source (expand-file-name "handoff.md" directory))
+         (capture (expand-file-name "expression" directory))
+         (fake-client (expand-file-name "emacsclient" directory))
+         (script (expand-file-name "bin/emacs-share"
+                                   (file-name-directory
+                                    (locate-library "agent-sessions"))))
+         (process-environment (copy-sequence process-environment)))
+    (unwind-protect
+        (progn
+          (with-temp-file source (insert "handoff\n"))
+          (with-temp-file fake-client
+            (insert "#!/bin/sh\n"
+                    "printf '%s' \"$2\" > \"$EMACS_SHARE_TEST_CAPTURE\"\n"
+                    "printf '\"Shared test\"\\n'\n"))
+          (set-file-modes fake-client #o755)
+          (setenv "PATH" (concat directory path-separator (getenv "PATH")))
+          (setenv "EMACS_AGENT_SESSION_ID" "stale-terminal")
+          (setenv "CODEX_SESSION_ID" "older-codex-id")
+          (setenv "CODEX_THREAD_ID" "current-thread")
+          (setenv "EMACS_SHARE_TEST_CAPTURE" capture)
+          (should (= 0 (call-process script nil nil nil "file" source)))
+          (let ((expression (with-temp-buffer
+                              (insert-file-contents capture)
+                              (buffer-string))))
+            (should (string-match-p
+                     (concat (regexp-quote
+                              "handoff.md\" \"\" \"current-thread\")")
+                             "\\'")
+                     expression))
+            (should-not (string-match-p "older-codex-id" expression))))
+      (delete-directory directory t))))
+
 (ert-deftest bp/agent-orchestration-status-alone-does-not-steer-running-codex ()
   (let* ((id "terminal")
          (message (bp/agent-orchestration-test--message "status" "progress"))
