@@ -797,7 +797,7 @@
       (bp/agent-sessions-submission-diff-or-detach-parent)
       (should (eq action 'detach)))))
 
-(ert-deftest bp/agent-sessions-shared-link-is-idempotent-and-current-per-kind ()
+(ert-deftest bp/agent-sessions-shared-links-allow-multiple-per-kind ()
   (bp/agent-sessions-test--with-temp-db
     (let* ((session (list :agent-session-id "thread-1"))
            (first (bp/agent-sessions--share-link
@@ -805,24 +805,62 @@
            (shared-at (plist-get first :shared-at)))
       (should-not (plist-get first :visited-at))
       (should (bp/agent-sessions--set-link-visited
-               (lambda (link) (equal (plist-get link :kind) "linear")) t))
+               (lambda (link) (equal (plist-get link :url)
+                                     "https://linear.app/issue/ABC-1")) t))
       (let ((same (bp/agent-sessions--share-link
                    session "linear" "https://linear.app/issue/ABC-1" "ABC-1")))
         (should (plist-get same :visited-at))
         (should (= shared-at (plist-get same :shared-at))))
-      (let ((changed (bp/agent-sessions--share-link
-                      session "linear" "https://linear.app/issue/ABC-2" "ABC-2")))
-        (should-not (plist-get changed :visited-at))
-        (should (= shared-at (plist-get changed :shared-at)))
-        (should (equal "https://linear.app/issue/ABC-2"
-                       (plist-get changed :url))))
-      (should (equal '((1))
+      (let ((second (bp/agent-sessions--share-link
+                     session "linear" "https://linear.app/issue/ABC-2" "ABC-2")))
+        (should-not (plist-get second :visited-at)))
+      (bp/agent-sessions--share-link
+       session "pr" "https://github.com/org/repo/pull/1" "PR 1")
+      (bp/agent-sessions--share-link
+       session "pr" "https://github.com/org/repo/pull/2" "PR 2")
+      (should (= 4 (length (bp/agent-sessions--session-links session))))
+      (with-temp-buffer
+        (bp/agent-sessions-mode)
+        (let ((inhibit-read-only t)
+              (bp/agent-sessions--row-status nil))
+          (bp/agent-sessions--insert-links session "  ")
+          (dolist (label '("ABC-1" "ABC-2" "PR 1" "PR 2"))
+            (should (string-match-p (regexp-quote label) (buffer-string))))))
+      (should (equal '((2))
                      (sqlite-select
                       (bp/agent-sessions--db)
                       "SELECT COUNT(*) FROM shared_links
                         WHERE owner_kind = 'session'
                           AND owner_key = 'thread-1'
-                          AND link_kind = 'linear'"))))))
+                          AND link_kind = 'linear'")))
+      (should (bp/agent-sessions--detach-link
+               session "https://linear.app/issue/ABC-2"))
+      (should (= 3 (length (bp/agent-sessions--session-links session))))
+      (should (plist-get (car (bp/agent-sessions--session-links session))
+                         :visited-at)))))
+
+(ert-deftest bp/agent-sessions-shared-links-migrate-old-key ()
+  (bp/agent-sessions-test--with-temp-db
+    (let ((db (bp/agent-sessions--db)))
+      (sqlite-execute db "DROP TABLE shared_links")
+      (sqlite-execute db "CREATE TABLE shared_links (
+        owner_kind TEXT NOT NULL, owner_key TEXT NOT NULL,
+        link_kind TEXT NOT NULL, url TEXT NOT NULL, label TEXT,
+        shared_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        visited_at INTEGER, PRIMARY KEY (owner_kind, owner_key, link_kind))")
+      (sqlite-execute db "INSERT INTO shared_links VALUES
+        ('session', 'thread-1', 'linear', 'https://linear.app/issue/ABC-1',
+         'ABC-1', 100, 100, 101)")
+      (sqlite-execute db "UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+      (bp/agent-sessions--db-migrate db)
+      (bp/agent-sessions--share-link
+       (list :agent-session-id "thread-1") "linear"
+       "https://linear.app/issue/ABC-2" "ABC-2")
+      (should (equal '((2))
+                     (sqlite-select db "SELECT COUNT(*) FROM shared_links")))
+      (should (equal '((101))
+                     (sqlite-select db "SELECT visited_at FROM shared_links
+                       WHERE url = 'https://linear.app/issue/ABC-1'"))))))
 
 (ert-deftest bp/agent-sessions-share-link-validates-kind-and-url ()
   (let ((session (list :agent-session-id "thread-1"))
