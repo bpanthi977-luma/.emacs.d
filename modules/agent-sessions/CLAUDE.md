@@ -532,11 +532,10 @@ highlighted until opened. It exists because a terminal is a bad inbox: "look at
 buffer.
 
 `emacs-share link linear|pr URL [LABEL]` uses the same UI
-for the external work that explains a session. A session has one current link
-per kind, so an issue workflow can register Linear when it starts and fill in
-the PR later without accumulating duplicates. Exact re-registration is a true
-no-op and preserves the read state; changing a kind's URL or label marks it
-unread again while keeping its position.
+for the external work that explains a session. A session can have multiple
+Linear tickets and PRs; each URL has its own row. Exact re-registration is a
+true no-op and preserves the read state; changing a URL's label marks that row
+unread again while keeping its position. A new URL adds a new row.
 
 **It is attached to the session, by the session's most durable identity.** The
 key is `--session-note-keys` reused verbatim — the agent's own session id when
@@ -645,7 +644,9 @@ statements against an already-open handle; every statement is `IF NOT EXISTS`,
 so it is free, and it makes a reload behave like a restart. Keep it in step
 with the schema list. Note what it does *not* do: it cannot alter an existing
 table, so a change that is not a pure addition needs a real migration keyed on
-`meta.schema_version`.
+`meta.schema_version`. Shared links moved from one row per kind to one row per
+URL in version 2; `--db-migrate` handles existing databases, including reloads
+into a running Emacs.
 
 Reload into the running server after any change (definitions don't hot-swap):
 `emacsclient -e '(load-file ".../agent-sessions/agent-sessions.el")'`. A
