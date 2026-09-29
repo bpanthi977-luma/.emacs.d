@@ -1191,7 +1191,7 @@ order (e.g. for buffers with no creation stamp)."
   "SQLite file holding the notes, the manual order, and the session log."
   :type 'file)
 
-(defconst bp/agent-sessions--schema-version 1)
+(defconst bp/agent-sessions--schema-version 2)
 
 (defvar bp/agent-sessions--db nil
   "Open SQLite handle, or nil before the database is first used.")
@@ -1304,9 +1304,7 @@ order (e.g. for buffers with no creation stamp)."
        PRIMARY KEY (kind, key, path))"
 
     ;; External work items an agent wants to keep visible beside its shared
-    ;; files.  There is one current URL per link_kind for a session: an issue
-    ;; workflow can register its Linear issue first and fill in its PR later,
-    ;; while retrying either registration stays idempotent.
+    ;; files.  Each URL has its own row; retrying a registration is idempotent.
     "CREATE TABLE IF NOT EXISTS shared_links (
        owner_kind TEXT    NOT NULL,
        owner_key  TEXT    NOT NULL,
@@ -1316,12 +1314,35 @@ order (e.g. for buffers with no creation stamp)."
        shared_at  INTEGER NOT NULL,
        updated_at INTEGER NOT NULL,
        visited_at INTEGER,
-       PRIMARY KEY (owner_kind, owner_key, link_kind))")
+       PRIMARY KEY (owner_kind, owner_key, url))")
   "Statements that bring an empty or existing database up to date.
-All are `IF NOT EXISTS', so running them on every open is the whole migration
-story for as long as the schema only ever grows.  `bp/agent-sessions--schema-version'
-is recorded in `meta' so a future change that *rewrites* data can tell how old
-a file is.")
+Schema version 2 changes the key of `shared_links'; see `bp/agent-sessions--db-migrate'.")
+
+(defun bp/agent-sessions--db-migrate (db)
+  "Migrate existing tables in DB after the additive schema is installed."
+  (when (< (string-to-number (or (caar (sqlite-select db
+                                                "SELECT value FROM meta WHERE key = 'schema_version'"))
+                                 "0")) 2)
+    (sqlite-execute db "CREATE TABLE shared_links_v2 (
+       owner_kind TEXT NOT NULL, owner_key TEXT NOT NULL,
+       link_kind TEXT NOT NULL, url TEXT NOT NULL, label TEXT,
+       shared_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+       visited_at INTEGER, PRIMARY KEY (owner_kind, owner_key, url))")
+    (sqlite-execute db "INSERT INTO shared_links_v2 SELECT * FROM shared_links")
+    ;; Existing manual-order keys were link kinds.  Each kind had one URL.
+    (sqlite-execute db "UPDATE order_entries SET member = (
+       SELECT url FROM shared_links
+        WHERE owner_key = order_entries.scope_repo
+          AND link_kind = order_entries.member)
+       WHERE kind = 'links' AND EXISTS (
+       SELECT 1 FROM shared_links
+        WHERE owner_key = order_entries.scope_repo
+          AND link_kind = order_entries.member)")
+    (sqlite-execute db "DROP TABLE shared_links")
+    (sqlite-execute db "ALTER TABLE shared_links_v2 RENAME TO shared_links")
+    (sqlite-execute db "UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+    (when (boundp 'bp/agent-sessions--order)
+      (setq bp/agent-sessions--order nil))))
 
 (defun bp/agent-sessions--now () (truncate (float-time)))
 
@@ -1340,7 +1361,8 @@ caller goes through here rather than touching `bp/agent-sessions--db'."
         (dolist (stmt bp/agent-sessions--db-schema)
           (sqlite-execute db stmt))
         (sqlite-execute db "INSERT OR IGNORE INTO meta VALUES ('schema_version', ?)"
-                        (list (number-to-string bp/agent-sessions--schema-version))))
+                        (list (number-to-string bp/agent-sessions--schema-version)))
+        (bp/agent-sessions--db-migrate db))
       (setq bp/agent-sessions--db db)
       (bp/agent-sessions--db-reap db)
       db)))
@@ -1355,7 +1377,8 @@ caller goes through here rather than touching `bp/agent-sessions--db'."
 (when (sqlitep bp/agent-sessions--db)
   (with-sqlite-transaction bp/agent-sessions--db
     (dolist (stmt bp/agent-sessions--db-schema)
-      (sqlite-execute bp/agent-sessions--db stmt))))
+      (sqlite-execute bp/agent-sessions--db stmt))
+    (bp/agent-sessions--db-migrate bp/agent-sessions--db)))
 
 (defun bp/agent-sessions--meta-get (db key)
   (caar (sqlite-select db "SELECT value FROM meta WHERE key = ?" (list key))))
@@ -1917,7 +1940,7 @@ re-edits the note point is sitting in."
                              (oref row value)))
                    (link (seq-find
                           (lambda (candidate)
-                            (equal (plist-get candidate :kind)
+                            (equal (plist-get candidate :url)
                                    (oref section value)))
                           (bp/agent-sessions--session-links session))))
          (cons (list (bp/agent-sessions--link-note-key
@@ -2366,7 +2389,7 @@ channel back, so a failure has to be reported in the value, not signalled."
   "Hash table KEY -> list of shared-link plists, or nil before first load.
 A KEY is the same durable session identity used by notes and shared files.
 Each plist is (:kind K :url U :label L :shared-at TS :updated-at TS
-:visited-at TS-or-nil).  A session has at most one current link of each kind;
+:visited-at TS-or-nil).  A session can have multiple links of each kind;
 the data is backed by the `shared_links' table.")
 
 (defun bp/agent-sessions--shared-links-table ()
@@ -2409,7 +2432,7 @@ the data is backed by the `shared_links' table.")
       (setq links (append links (copy-sequence (gethash key table)))))
     (bp/agent-sessions--apply-manual-order
      (bp/agent-sessions--links-scope session)
-     (lambda (link) (plist-get link :kind))
+     (lambda (link) (plist-get link :url))
      (sort links (lambda (a b) (< (plist-get a :shared-at)
                                   (plist-get b :shared-at)))))))
 
@@ -2421,8 +2444,8 @@ the data is backed by the `shared_links' table.")
       (owner_kind, owner_key, link_kind, url, label,
        shared_at, updated_at, visited_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(owner_kind, owner_key, link_kind) DO UPDATE
-      SET url        = excluded.url,
+    ON CONFLICT(owner_kind, owner_key, url) DO UPDATE
+      SET link_kind  = excluded.link_kind,
           label      = excluded.label,
           updated_at = excluded.updated_at,
           visited_at = excluded.visited_at"
@@ -2445,9 +2468,9 @@ the data is backed by the `shared_links' table.")
         (dolist (link links)
           (unless (seq-find
                    (lambda (candidate)
-                     (equal (plist-get candidate :kind)
-                            (plist-get link :kind)))
-                   kept)
+                     (equal (plist-get candidate :url)
+                            (plist-get link :url)))
+                   (append kept moved))
             (push link moved)))
         (remhash key table)
         (sqlite-execute
@@ -2460,10 +2483,10 @@ the data is backed by the `shared_links' table.")
         (bp/agent-sessions--shared-link-write primary link)))))
 
 (defun bp/agent-sessions--share-link (session kind url label)
-  "Attach the current KIND link URL with LABEL to SESSION.
+  "Attach KIND link URL with LABEL to SESSION.
 An identical registration is a no-op, including preserving its visited state.
-Changing the URL or label updates the existing kind in place and marks it
-unvisited, while preserving its original display position."
+Changing the label updates that URL and marks it unvisited, while preserving
+its original display position."
   (let ((keys (bp/agent-sessions--session-note-keys session))
         (now (bp/agent-sessions--now)))
     (unless keys
@@ -2473,13 +2496,12 @@ unvisited, while preserving its original display position."
            (primary (car keys))
            (links (gethash primary table))
            (existing (seq-find
-                      (lambda (link) (equal (plist-get link :kind) kind))
+                      (lambda (link) (equal (plist-get link :url) url))
                       links))
            (label (or (and label (not (string-empty-p label)) label)
-                      (and existing (equal url (plist-get existing :url))
-                           (plist-get existing :label)))))
+                      (and existing (plist-get existing :label)))))
       (if (and existing
-               (equal url (plist-get existing :url))
+               (equal kind (plist-get existing :kind))
                (equal label (plist-get existing :label)))
           existing
         (let ((link (list :kind kind :url url :label label
@@ -2498,25 +2520,25 @@ unvisited, while preserving its original display position."
           (bp/agent-sessions--shared-link-write primary link)
           link)))))
 
-(defun bp/agent-sessions--detach-link (session kind)
-  "Remove the current KIND link from SESSION; return non-nil if attached."
+(defun bp/agent-sessions--detach-link (session url)
+  "Remove the link at URL from SESSION; return non-nil if attached."
   (let ((table (bp/agent-sessions--shared-links-table))
         (db (bp/agent-sessions--db))
         removed)
     (dolist (key (bp/agent-sessions--session-note-keys session))
       (let ((links (gethash key table)))
-        (when (seq-find (lambda (link) (equal (plist-get link :kind) kind))
+        (when (seq-find (lambda (link) (equal (plist-get link :url) url))
                         links)
           (puthash key
                    (seq-remove
-                    (lambda (link) (equal (plist-get link :kind) kind))
+                    (lambda (link) (equal (plist-get link :url) url))
                     links)
                    table)
           (sqlite-execute
            db
            "DELETE FROM shared_links
-             WHERE owner_kind = ? AND owner_key = ? AND link_kind = ?"
-           (append key (list kind)))
+             WHERE owner_kind = ? AND owner_key = ? AND url = ?"
+           (append key (list url)))
           (setq removed t))))
     removed))
 
@@ -2535,8 +2557,8 @@ unvisited, while preserving its original display position."
            (sqlite-execute
             db
             "UPDATE shared_links SET visited_at = ?
-              WHERE owner_kind = ? AND owner_key = ? AND link_kind = ?"
-            (list stamp (car key) (cadr key) (plist-get link :kind)))
+              WHERE owner_kind = ? AND owner_key = ? AND url = ?"
+            (list stamp (car key) (cadr key) (plist-get link :url)))
            (setq changed t))))
      (bp/agent-sessions--shared-links-table))
     changed))
@@ -2591,14 +2613,14 @@ Point may be on the link row or inside its note."
     (when (and section (eq (oref section type) 'bp/agent-session-note))
       (setq section (oref section parent)))
     (when (and section (eq (oref section type) 'bp/agent-session-link))
-      (let* ((kind (oref section value))
+      (let* ((url (oref section value))
              (row (bp/agent-sessions--enclosing-section 'bp/agent-session-row))
              (session (and row (bp/agent-sessions--session-for-id
                                 (oref row value)))))
         (when session
-          (list session kind
+          (list session url
                 (seq-find (lambda (link)
-                            (equal (plist-get link :kind) kind))
+                            (equal (plist-get link :url) url))
                           (bp/agent-sessions--session-links session))))))))
 
 (defun bp/agent-sessions--open-link-at-point ()
@@ -2718,7 +2740,7 @@ not make them learn two highlights for it.")
     (push (cons (line-beginning-position)
                 (if unvisited 'needs-attention 'idle))
           bp/agent-sessions--row-status)
-    (magit-insert-section (bp/agent-session-link kind)
+    (magit-insert-section (bp/agent-session-link url)
       (magit-insert-heading
        (propertize
         (concat indent (if unvisited "● " "  ")
@@ -3106,11 +3128,11 @@ Detaching drops only the dashboard pointer; files on disk and external targets
 are untouched."
   (interactive)
   (pcase (bp/agent-sessions--link-at-point)
-    (`(,session ,kind ,link)
+    (`(,session ,url ,link)
      (let ((ident (bp/agent-sessions--neighbour-ident
                    (bp/agent-sessions--enclosing-section
                     'bp/agent-session-link))))
-       (if (bp/agent-sessions--detach-link session kind)
+       (if (bp/agent-sessions--detach-link session url)
            (progn
              (bp/agent-sessions--refresh)
              (bp/agent-sessions--goto-ident ident)
@@ -3612,7 +3634,7 @@ are exactly what the next render will order."
                                  (oref row value)))))
          (when session
            (list (bp/agent-sessions--links-scope session)
-                 (mapcar (lambda (link) (plist-get link :kind))
+                 (mapcar (lambda (link) (plist-get link :url))
                          (bp/agent-sessions--session-links session))
                  (oref section value))))))))
 
