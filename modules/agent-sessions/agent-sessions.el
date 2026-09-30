@@ -3059,6 +3059,18 @@ For every other shared file or dashboard row, behave exactly like
            (browse-url-of-file path))))
       (_ (bp/agent-sessions-display)))))
 
+(defun bp/agent-sessions-copy-attachment ()
+  "Copy the shared file path or external URL at point to the kill ring."
+  (interactive)
+  (let ((value (or (when-let ((link (bp/agent-sessions--link-at-point)))
+                     (plist-get (nth 2 link) :url))
+                   (nth 1 (bp/agent-sessions--file-at-point)))))
+    (if value
+        (progn
+          (kill-new value)
+          (message "Copied %s" value))
+      (message "No shared file or link at point."))))
+
 (defun bp/agent-sessions--row-locations ()
   "Return (POSITION . ID) for each session row, in buffer order."
   (let (rows last-start)
@@ -5421,6 +5433,7 @@ out one that is already taken — or hide one that just became available."
 (define-key bp/agent-sessions-mode-map (kbd "d") #'bp/agent-sessions-show-file-diff)
 (define-key bp/agent-sessions-mode-map (kbd "v") #'bp/agent-sessions-display)
 (define-key bp/agent-sessions-mode-map (kbd "V") #'bp/agent-sessions-display-or-browse)
+(define-key bp/agent-sessions-mode-map (kbd "w") #'bp/agent-sessions-copy-attachment)
 (define-key bp/agent-sessions-mode-map (kbd "k") #'bp/agent-sessions-kill)
 (define-key bp/agent-sessions-mode-map (kbd "b") #'bp/agent-sessions-branch)
 (define-key bp/agent-sessions-mode-map (kbd "B") #'bp/agent-sessions-mark-parent)
