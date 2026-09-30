@@ -932,5 +932,27 @@
                 (refresh)
                 (browse "https://github.com/org/repo/pull/1")))))))
 
+(ert-deftest bp/agent-sessions-w-copies-attachment-value ()
+  (let ((kill-ring nil)
+        (link nil)
+        (file nil))
+    (cl-letf (((symbol-function 'bp/agent-sessions--link-at-point)
+               (lambda () link))
+              ((symbol-function 'bp/agent-sessions--file-at-point)
+               (lambda () file)))
+      (setq file '(session "/tmp/shared plan.md" nil))
+      (bp/agent-sessions-copy-attachment)
+      (should (equal "/tmp/shared plan.md" (car kill-ring)))
+      (setq file nil
+            link '(session "https://example.com/pr/1"
+                           (:url "https://example.com/pr/1")))
+      (bp/agent-sessions-copy-attachment)
+      (should (equal "https://example.com/pr/1" (car kill-ring)))
+      (setq link nil)
+      (bp/agent-sessions-copy-attachment)
+      (should (equal "https://example.com/pr/1" (car kill-ring))))
+    (should (eq (lookup-key bp/agent-sessions-mode-map (kbd "w"))
+                #'bp/agent-sessions-copy-attachment))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
