@@ -51,6 +51,54 @@ freezes for a fraction of a second and then appears already redrawn."
         (run-with-timer bp/eat-resize-coalesce-duration nil
                         #'bp/eat--restore-latency (current-buffer))))
 
+(defvar bp/eat-resize-resync-duration 1.5
+  "Seconds after a real resize during which eat output re-anchors the window point.
+Slightly longer than `bp/eat-resize-coalesce-duration', so the resync window
+stays open until the TUI's answering repaint has fully flushed through the
+coalesced latency (pi's repaints run longer than Codex's).")
+
+(defvar-local bp/eat--resync-scroll-until nil
+  "Time until which each eat output batch re-anchors the window point.
+Armed by `bp/eat--adjust-process-window-size' when a resize actually reaches
+the pty.  Scoped to a resize: outside the window the hook is inert, so
+reading scrollback still pins the view (that is what eat's point-equality
+test exists for).")
+
+(defun bp/eat--force-synchronize-scroll ()
+  "Re-anchor point in every window showing the current eat buffer.
+`eat--synchronize-scroll-windows' with force-selected, generalised: eat
+lists only the windows whose point still equals the display cursor — but a
+repaint moves the cursor, dropping every window from its list, after which
+eat never scrolls them again (until a keypress forces it).  Passing the
+buffer plus *every* window showing it restores the equality eat's
+synchronization needs, in one call, regardless of where point was left."
+  (when (bound-and-true-p eat-terminal)
+    (eat--synchronize-scroll
+     (cons 'buffer (get-buffer-window-list nil nil 'all-frames)))))
+
+(defun bp/eat--resync-scroll-on-display ()
+  "Re-anchor the scroll when this eat buffer is displayed in a window.
+`window-buffer-change-functions' is where a stale remembered point gets
+restored by `set-window-buffer' — the position that makes eat drop the
+window — so this is also what makes a buffer switch land on the composer
+instead of wherever the window last was."
+  (bp/eat--force-synchronize-scroll))
+
+(defun bp/eat--resync-scroll-on-update ()
+  "Re-anchor the scroll on each output batch inside the post-resize window.
+The repaint answering a resize arrives over several batches, each moving
+the display cursor; re-anchor on every one of them while the window is
+armed.  Inert outside it, so scrolling back to read stays put."
+  (when (and bp/eat--resync-scroll-until
+             (time-less-p (current-time) bp/eat--resync-scroll-until))
+    (bp/eat--force-synchronize-scroll)))
+
+(defun bp/eat--setup-scroll-sync ()
+  "Install the scroll re-anchoring hooks for this eat buffer."
+  (add-hook 'window-buffer-change-functions
+            #'bp/eat--resync-scroll-on-display nil t)
+  (add-hook 'eat-update-hook #'bp/eat--resync-scroll-on-update nil t))
+
 (defun bp/eat--adjust-process-window-size (fn process windows)
   "Keep the pty size when only the echo area changed the window height.
 Intended as :around advice for `eat--adjust-process-window-size'."
@@ -62,9 +110,14 @@ Intended as :around advice for `eat--adjust-process-window-size'."
                  (/= (cdr want) (cdr have))   ; height changed...
                  (bp/eat--echo-area-tall-p windows)) ; ...and the echo area is why
       ;; A size we actually push to the pty means a full repaint is coming back
-      ;; over the next several output chunks.  Coalesce them.
+      ;; over the next several output chunks.  Coalesce them, and re-anchor the
+      ;; window on every batch while it lands: pi/codex only see SIGWINCH, know
+      ;; nothing about Emacs windows, and their repaint moves the display cursor
+      ;; far from where the window was looking.
       (when (and have want (not (equal want have)))
-        (bp/eat--coalesce-after-resize))
+        (bp/eat--coalesce-after-resize)
+        (setq bp/eat--resync-scroll-until
+              (time-add (current-time) bp/eat-resize-resync-duration)))
       (funcall fn process windows))))
 
 (define-prefix-command 'bp/agent-prefix-map)
@@ -140,11 +193,20 @@ Intended as :around advice for `eat--adjust-process-window-size'."
     ;; The other half of the same story: a *genuine* height change (switching
     ;; the buffer into a window of a different size, splitting, resizing the
     ;; frame) is supposed to reach the pty, so the suppression above does not
-    ;; apply -- but Codex's answering repaint still sweeps the viewport from the
-    ;; top.  That is handled inside the same advice, by coalescing the repaint
-    ;; into a single redisplay; see `bp/eat--coalesce-after-resize'.  Codex can
-    ;; do nothing about it: it only sees SIGWINCH and knows nothing about Emacs
-    ;; windows.
+    ;; apply -- but Codex's and pi's answering repaint still sweeps the viewport
+    ;; from the top.  Coalescing hides most of it; the scroll-sync hooks in
+    ;; `bp/eat--setup-scroll-sync' handle what remains, re-anchoring the window
+    ;; on every batch of the repaint and on every buffer display.  Codex and pi
+    ;; can do nothing about it: they only see SIGWINCH and know nothing about
+    ;; Emacs windows.
+
+    ;; `eat-mode-hook' only fires for buffers created after this ran; re-anchor
+    ;; the ones already open (the running agent TUIs).
+    (bp/eat--setup-scroll-sync)
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (derived-mode-p 'eat-mode)
+          (bp/eat--setup-scroll-sync))))
     )
 
   ;; Install the advice, hooks, Org link type, project binding, and server.
