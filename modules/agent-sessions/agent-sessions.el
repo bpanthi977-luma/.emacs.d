@@ -1,10 +1,10 @@
-;; Dashboard for Claude/Codex sessions running in vterm buffers.
+;; Dashboard for Claude/Codex/Pi sessions running in vterm buffers.
 ;;
 ;; Every vterm buffer gets a unique id injected into its shell environment
 ;; (EMACS_AGENT_SESSION_ID) at creation time, with no special launcher command
-;; needed. Hook scripts for Claude Code / Codex forward their event payloads
-;; to `bp/agent-hook-notify' via emacsclient, keyed by that id, so sessions
-;; sharing a worktree still resolve to the right buffer.
+;; needed. Hook scripts for Claude Code / Codex, and a Pi extension, forward
+;; their event payloads to `bp/agent-hook-notify' via emacsclient, keyed by
+;; that id, so sessions sharing a worktree still resolve to the right buffer.
 
 (require 'cl-lib)
 (require 'seq)
@@ -166,7 +166,10 @@ Toggle with `s' \(`bp/agent-sessions-toggle-sort').")
     (codex . ((Stop . needs-attention)
               (PermissionRequest . needs-attention)
               (UserPromptSubmit . running)
-              (agent-turn-complete . needs-attention))))
+              (agent-turn-complete . needs-attention)))
+    (pi . ((Stop . needs-attention)
+           (StopFailure . error)
+           (UserPromptSubmit . running))))
   "Per-agent hook/notify event name -> status.
 Events not listed here (PreToolUse, PostToolUse, SubagentStart/Stop, etc.)
 leave a session's existing status unchanged rather than resetting it — hook
@@ -518,8 +521,7 @@ to the terminal that actually owns the event."
          ;; authoritative value so that retained text is not mistaken for a
          ;; new human draft.  Other events preserve the last submitted value.
          (submitted-prompt
-          (or (and (equal agent-type "claude")
-                   (equal event-name "UserPromptSubmit")
+          (or (and (equal event-name "UserPromptSubmit")
                    payload
                    (gethash "user_prompt" payload))
               (and existing (plist-get existing :submitted-prompt)))))
@@ -3771,14 +3773,16 @@ as the editable default so it can be tweaked before confirming."
 
 (defcustom bp/agent-session-resume-commands
   '((claude . "claude --resume %s")
-    (codex  . "codex resume %s"))
+    (codex  . "codex resume %s")
+    (pi     . "pi --session %s"))
   "Alist mapping AGENT-TYPE symbol to a shell command that resumes a session.
 The %s is replaced with the agent's own session id."
   :type '(alist :key-type symbol :value-type string))
 
 (defcustom bp/agent-session-branch-commands
   '((claude . "claude --resume %s --fork-session")
-    (codex  . "codex fork %s"))
+    (codex  . "codex fork %s")
+    (pi     . "pi --fork %s"))
   "Alist mapping AGENT-TYPE symbol to a shell command that branches a session.
 Branching forks the conversation into a new session that shares the parent's
 history but gets its own session id (`claude --fork-session' / `codex fork').
@@ -4148,7 +4152,8 @@ repo > worktree > session tree with foldable sections (TAB to fold/unfold)."
 
 (defcustom bp/agent-orchestration-launch-commands
   '((claude . "claude %m \"$(cat %b)\"")
-    (codex  . "codex %m \"$(cat %b)\""))
+    (codex  . "codex %m \"$(cat %b)\"")
+    (pi     . "pi %m \"$(cat %b)\""))
   "Shell command per agent type that starts a worker on a task brief.
 Rendered with `format-spec':
 
@@ -4170,7 +4175,8 @@ that type is refused rather than quietly run on the default model."
 
 (defcustom bp/agent-orchestration-model-flags
   '((claude . "--model %s")
-    (codex  . "--model %s"))
+    (codex  . "--model %s")
+    (pi     . "--model %s"))
   "How each agent type spells \"run on this model\", with %s for the model name.
 This is what `%m' in `bp/agent-orchestration-launch-commands' expands to when a
 spawn names a model.  A type with no entry here takes no model, and a spawn
@@ -4642,8 +4648,8 @@ command instead of sending it to an agent."
                           (bp/agent-sessions--foreground-command buf))))
     (and foreground
          (not (equal (plist-get session :last-event) "SessionEnd"))
-         (or (member agent '("claude" "codex"))
-             (member (downcase foreground) '("claude" "codex"))))))
+         (or (member agent '("claude" "codex" "pi"))
+             (member (downcase foreground) '("claude" "codex" "pi"))))))
 
 (defun bp/agent-sessions--prompt-entry-viewed-at (entry)
   "Return when ENTRY's terminal was most recently selected, or nil."
@@ -5474,6 +5480,13 @@ out one that is already taken — or hide one that just became available."
   "Codex hooks file that `bp/agent-sessions-install' wires."
   :type 'file)
 
+(defcustom bp/agent-sessions-pi-extension-file
+  (expand-file-name "~/.pi/agent/extensions/agent-sessions-pi-hook.ts")
+  "Where `bp/agent-sessions-install' installs the Pi event forwarder.
+Pi has no hooks.json — extensions are plain files in this directory — so
+installation is a copy, and uninstallation a delete."
+  :type 'file)
+
 (defcustom bp/agent-sessions-claude-hook-events
   '("SessionStart" "SessionEnd" "UserPromptSubmit" "Stop" "StopFailure"
     "SubagentStop" "TeammateIdle"
@@ -5494,6 +5507,7 @@ noticed when the terminal dies or another session starts in it."
 
 (defconst bp/agent-sessions--claude-hook-script "agent-sessions-claude-hook.sh")
 (defconst bp/agent-sessions--codex-hook-script "agent-sessions-codex-hook.sh")
+(defconst bp/agent-sessions--pi-hook-script "agent-sessions-pi-hook.ts")
 
 (defun bp/agent-sessions--read-json (file)
   "Parse FILE as JSON into hash-tables + lists, or an empty object if absent.
@@ -5599,25 +5613,43 @@ Returns t if FILE was changed."
         (bp/agent-sessions--write-json file root)
         t))))
 
+(defun bp/agent-sessions--wire-pi (script)
+  "Install the Pi extension SCRIPT into `bp/agent-sessions-pi-extension-file'.
+Pi has no hooks config to edit; extensions are whole files in
+`~/.pi/agent/extensions/', so wiring is a fresh copy — re-running after
+editing the source self-heals."
+  (make-directory (file-name-directory bp/agent-sessions-pi-extension-file) t)
+  (copy-file script bp/agent-sessions-pi-extension-file t))
+
+(defun bp/agent-sessions--unwire-pi ()
+  "Remove the installed Pi extension.  Returns t if anything was removed."
+  (let ((file bp/agent-sessions-pi-extension-file))
+    (when (file-exists-p file)
+      (delete-file file)
+      t)))
+
 ;;;###autoload
 (defun bp/agent-sessions-install (&optional force)
-  "Wire this package's hooks into Claude Code and Codex.
-So a `claude'/`codex' run in any Emacs terminal reports to the dashboard,
+  "Wire this package's hooks into Claude Code, Codex, and Pi.
+So a `claude'/`codex'/`pi' run in any Emacs terminal reports to the dashboard,
 without depending on any external tool (e.g. orca).  Idempotent — re-run any
 time: after installing a second agent, moving this package, changing the hook
 event lists, or removing orca.  Only touches hook entries pointing at this
 package's own forwarder scripts; other hooks are left as-is.
 
-Wires Claude when `~/.claude' exists and Codex when `~/.codex' exists; with a
-prefix arg (FORCE) wires both regardless, creating the config as needed.  Also
-starts the Emacs server, which the hooks need to reach us."
+Wires Claude when `~/.claude' exists, Codex when `~/.codex' exists, and Pi
+when `~/.pi' exists; with a prefix arg (FORCE) wires all regardless,
+creating the config as needed.  Also starts the Emacs server, which the
+hooks need to reach us."
   (interactive "P")
   (let ((claude-script (expand-file-name bp/agent-sessions--claude-hook-script
                                          bp/agent-sessions--dir))
         (codex-script (expand-file-name bp/agent-sessions--codex-hook-script
                                         bp/agent-sessions--dir))
+        (pi-script (expand-file-name bp/agent-sessions--pi-hook-script
+                                     bp/agent-sessions--dir))
         done)
-    (dolist (s (list claude-script codex-script))
+    (dolist (s (list claude-script codex-script pi-script))
       (if (file-exists-p s)
           (set-file-modes s #o755)
         (error "agent-sessions: missing hook script %s" s)))
@@ -5631,15 +5663,18 @@ starts the Emacs server, which the hooks need to reach us."
       (bp/agent-sessions--wire bp/agent-sessions-codex-hooks-file
                                bp/agent-sessions-codex-hook-events codex-script)
       (push "Codex" done))
+    (when (or force (file-directory-p "~/.pi"))
+      (bp/agent-sessions--wire-pi pi-script)
+      (push "Pi" done))
     (unless (server-running-p) (server-start))
     (if done
         (message "agent-sessions: wired %s (server running)"
                  (string-join (nreverse done) " + "))
-      (message "agent-sessions: neither ~/.claude nor ~/.codex found; use `C-u M-x bp/agent-sessions-install' to force"))))
+      (message "agent-sessions: neither ~/.claude, ~/.codex, nor ~/.pi found; use `C-u M-x bp/agent-sessions-install' to force"))))
 
 ;;;###autoload
 (defun bp/agent-sessions-uninstall ()
-  "Remove this package's hooks from Claude Code and Codex config.
+  "Remove this package's hooks from Claude Code, Codex, and Pi config.
 Leaves every other hook (orca's, yours) intact, and leaves the forwarder
 scripts on disk.  Safe to run whether or not `bp/agent-sessions-install' ran."
   (interactive)
@@ -5651,7 +5686,9 @@ scripts on disk.  Safe to run whether or not `bp/agent-sessions-install' ran."
                              (and (bp/agent-sessions--unwire
                                    bp/agent-sessions-codex-hooks-file
                                    bp/agent-sessions--codex-hook-script)
-                                  "Codex")))))
+                                  "Codex")
+                             (and (bp/agent-sessions--unwire-pi)
+                                  "Pi")))))
     (message (if changed
                  (format "agent-sessions: unhooked from %s" (string-join changed " + "))
                "agent-sessions: nothing to remove"))))

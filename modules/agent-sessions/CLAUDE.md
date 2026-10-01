@@ -8,6 +8,9 @@ code says *what* it does; this file records *why*, so the intent survives edits.
 - `agent-sessions.el` — everything; `agent-sessions-codex-hook.sh` — Codex event
   forwarder. The Claude forwarder lives outside the repo
   (`~/.orca/agent-hooks/claude-hook.sh`, wired via `~/.claude/settings.json`).
+  Pi needs neither: its extension is TypeScript in-process, so
+  `agent-sessions-pi-hook.ts` is the forwarder itself, copied into
+  `~/.pi/agent/extensions/` by `bp/agent-sessions-install`.
 - `bin/` — commands agents run *inside* a session terminal: `emacs-share`
   (see "Shared files") and `emacs-agent` (see "Orchestration"). On every session
   terminal's PATH.
@@ -66,6 +69,18 @@ share its note. The order table carries the same tag as `kind`, and its scope
 columns default to `''` rather than `NULL` — SQLite treats `NULL`s as distinct
 under a primary key, so a `NULL` scope would silently turn every upsert into a
 duplicate insert.
+
+**A session that reports under a Claude event name rides every existing path.**
+Pi has no hooks.json — extensions are whole files — so its forwarder translates
+its own events (`agent_end` → `Stop`, `before_agent_start` → `UserPromptSubmit`,
+`session_shutdown` → `SessionEnd`) into the vocabulary the status table already
+keys on, and delivers them through the same `bp/agent-hook-notify` channel. That
+is why `bp/agent-session-status-alist` grows a two-line `pi` entry instead of a
+parallel pipeline: an agent that speaks the common event language gets attention
+tracking, the session log, and restore for free, and cannot drift out of sync
+with them. What pi deliberately does not get: fork parentage (Claude-only,
+transcript-based) and native queueing (no known-safe composer moment, so
+mail to a pi agent stays unread for `emacs-agent wait`).
 
 **How a session ended is inferred from which hook fired, not from a flag.**
 Emacs runs `kill-emacs-hook` on exit but does *not* run `kill-buffer-hook` for
