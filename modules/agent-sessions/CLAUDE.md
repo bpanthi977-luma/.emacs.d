@@ -213,12 +213,12 @@ uses only keys that are stable under activity: a coarse attention bucket
 (error → needs-attention → running → rest), then buffer creation time, then
 buffer name as a deterministic final tie-break (hash iteration order must never
 leak into the layout). A row *does* move when its status changes — that's a
-rare, meaningful event, unlike a tool call. Repos are alphabetical, and worktree
-is a column on each session row. Recency sort survives behind `s`
+rare, meaningful event, unlike a tool call. Repos and worktrees are alphabetical,
+and each row starts with a dynamically sized worktree column. Recency sort survives behind `s`
 for when you want it; don't make it the default again.
 
 **Manual order overrides the automatic one per group, and only per group.**
-`M-n`/`M-p` move the repo or row at point within its own siblings and
+`M-n`/`M-p` move the repo, worktree, folder, or row at point within its siblings and
 persist that group's key list. Design points worth keeping: items with no
 recorded key keep the automatic order and sort *after* the placed ones, so a new
 session never displaces a slot the user chose; rewriting a group splices the
@@ -231,9 +231,11 @@ past a sibling of its parent's group may not visibly move it — the nesting win
 Manual order is disabled while `s` (recency) is active; those two orderings
 would fight, and recency should stay a temporary lens.
 
-**Folders belong to repos.** The default view is repo → session with each
-session's worktree and folder visible on its row. `f` gives repo → folder →
-session, including a No folder group under each repo; worktree stays a column.
+**Folders belong to repos.** The default view is repo → worktree → session, with
+the session's folder shown on its row. `f` gives repo → folder → session,
+including a No folder group under each repo. Both views put the worktree name
+first on each row and the branch after the title. `Shift+TAB` toggles closed
+repo headings and an expanded view that leaves files and links folded.
 `F` on a row moves it to a folder in that repo and creates an unmatched name.
 `F` on a folder heading renames or deletes that repo's folder. Folder names may
 repeat in different repos. SQLite schema version 3 migrates the old global
