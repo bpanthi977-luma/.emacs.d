@@ -140,11 +140,9 @@ it is loaded lazily the first time a session terminal is created."
                  (const :tag "eat" eat)))
 
 (defcustom bp/agent-sessions-show-all-worktrees nil
-  "When non-nil, list every worktree of a repo, even those with no session.
-This makes it easy to spin up a new session in an idle worktree with the
-`+' key (`bp/agent-sessions-new-vterm').  Only repos that already have at
-least one session are shown; the option controls whether their empty
-worktrees are listed too."
+  "Legacy option retained for compatibility.
+Worktrees are now a session column; `+' on a repo or folder offers all of its
+worktrees, including those with no session."
   :type 'boolean)
 
 (defcustom bp/agent-session-notify-on-attention t
@@ -154,15 +152,15 @@ not on every hook event, so a session that stays waiting is announced once."
   :type 'boolean)
 
 (defvar bp/agent-sessions-sort-by-activity nil
-  "When non-nil, sort repos, worktrees, and sessions by most recent activity.
+  "When non-nil, sort repos and sessions by most recent activity.
 Off by default because `:updated-at' changes on every hook event, so two
 sessions running at once continually swap places in the dashboard.  The
-default is the stable order of `bp/agent-sessions--sort-tree-stable'.
+default is a stable alphabetical repo order with attention sorted sessions.
 Toggle with `s' \(`bp/agent-sessions-toggle-sort').")
 
 (defvar bp/agent-sessions-group-by-folder nil
-  "When non-nil, display folder → repo → worktree → session.
-Toggle with `f'; the regular view groups by repo and worktree.")
+  "When non-nil, display repo → folder → session.
+Worktree is a column in both views.  Toggle with `f'.")
 
 (defconst bp/agent-session-status-alist
   '((claude . ((Stop . needs-attention)
@@ -981,7 +979,7 @@ indentation conveys the relationship."
          (title (or (plist-get entry :title) ""))
          (branched-from (plist-get session :branched-from))
          (indent (make-string (* 2 (or depth 0)) ?\s))
-         (base (if bp/agent-sessions-group-by-folder "      " "    "))
+         (base (if bp/agent-sessions-group-by-folder "    " "  "))
          (folder (and (not bp/agent-sessions-group-by-folder)
                       (bp/agent-sessions--folder
                        (bp/agent-sessions--folder-for-session session)))))
@@ -994,7 +992,9 @@ indentation conveys the relationship."
       (magit-insert-heading
         (bp/agent-sessions--row-text
          (concat base indent marker
-                 (format "%-7s %-16s " (plist-get session :agent-type) status))
+                 (format "%-7s %-16s %-28s "
+                         (or (plist-get session :agent-type) "") status
+                         (or (plist-get session :worktree) "?")))
          (bp/agent-sessions--session-state session)
          (format "%s%s%s%s\n"
                  title
@@ -1206,7 +1206,7 @@ order (e.g. for buffers with no creation stamp)."
   "SQLite file holding the notes, the manual order, and the session log."
   :type 'file)
 
-(defconst bp/agent-sessions--schema-version 2)
+(defconst bp/agent-sessions--schema-version 3)
 
 (defvar bp/agent-sessions--db nil
   "Open SQLite handle, or nil before the database is first used.")
@@ -1240,7 +1240,9 @@ order (e.g. for buffers with no creation stamp)."
 
     "CREATE TABLE IF NOT EXISTS folders (
        id   INTEGER PRIMARY KEY,
-       name TEXT NOT NULL UNIQUE COLLATE NOCASE)"
+       repo TEXT NOT NULL,
+       name TEXT NOT NULL COLLATE NOCASE,
+       UNIQUE (repo, name))"
     "CREATE TABLE IF NOT EXISTS session_folders (
        agent_sid TEXT PRIMARY KEY,
        folder_id INTEGER NOT NULL)"
@@ -1338,7 +1340,7 @@ order (e.g. for buffers with no creation stamp)."
        visited_at INTEGER,
        PRIMARY KEY (owner_kind, owner_key, url))")
   "Statements that bring an empty or existing database up to date.
-Schema version 2 changes the key of `shared_links'; see `bp/agent-sessions--db-migrate'.")
+Schema migrations are handled by `bp/agent-sessions--db-migrate'.")
 
 (defun bp/agent-sessions--db-migrate (db)
   "Migrate existing tables in DB after the additive schema is installed."
@@ -1364,7 +1366,37 @@ Schema version 2 changes the key of `shared_links'; see `bp/agent-sessions--db-m
     (sqlite-execute db "ALTER TABLE shared_links_v2 RENAME TO shared_links")
     (sqlite-execute db "UPDATE meta SET value = '2' WHERE key = 'schema_version'")
     (when (boundp 'bp/agent-sessions--order)
-      (setq bp/agent-sessions--order nil))))
+      (setq bp/agent-sessions--order nil)))
+  (when (< (string-to-number (or (caar (sqlite-select db
+                                                "SELECT value FROM meta WHERE key = 'schema_version'"))
+                                 "0")) 3)
+    (sqlite-execute db "CREATE TABLE folders_v3 (
+       id INTEGER PRIMARY KEY, repo TEXT NOT NULL,
+       name TEXT NOT NULL COLLATE NOCASE, UNIQUE (repo, name))")
+    ;; A folder used in more than one repo becomes one folder in each repo.
+    ;; The session log records the canonical repo root for durable sessions.
+    (sqlite-execute db "INSERT OR IGNORE INTO folders_v3 (repo, name)
+       SELECT repos.repo, f.name FROM folders f CROSS JOIN (
+         SELECT DISTINCT s.repo FROM session_folders sf
+         JOIN sessions s ON s.agent_sid = sf.agent_sid
+         WHERE s.repo IS NOT NULL AND s.repo != '') repos")
+    ;; Keep unmatched and empty legacy folders available for assignment when
+    ;; a session next appears, rather than silently dropping their names.
+    (sqlite-execute db "INSERT OR IGNORE INTO folders_v3 (repo, name)
+       SELECT '', name FROM folders")
+    (sqlite-execute db "UPDATE session_folders SET folder_id = (
+       SELECT f3.id FROM folders_v3 f3
+       JOIN folders old ON old.name = f3.name COLLATE NOCASE
+       WHERE old.id = session_folders.folder_id
+         AND f3.repo = COALESCE((SELECT repo FROM sessions
+             WHERE agent_sid = session_folders.agent_sid
+               AND repo IS NOT NULL AND repo != ''
+             ORDER BY id DESC LIMIT 1), ''))")
+    (sqlite-execute db "DROP TABLE folders")
+    (sqlite-execute db "ALTER TABLE folders_v3 RENAME TO folders")
+    (sqlite-execute db "UPDATE meta SET value = '3' WHERE key = 'schema_version'")
+    (when (boundp 'bp/agent-sessions--folders-loaded-p)
+      (setq bp/agent-sessions--folders-loaded-p nil))))
 
 (defun bp/agent-sessions--now () (truncate (float-time)))
 
@@ -1806,7 +1838,7 @@ the id key."
 
 (defvar bp/agent-sessions--folders-loaded-p nil)
 (defvar bp/agent-sessions--folders nil
-  "List of (:id ID :name NAME) folders, loaded once from SQLite.")
+  "List of (:id ID :repo ROOT :name NAME) folders, loaded once from SQLite.")
 (defvar bp/agent-sessions--folder-assignments nil
   "Hash of agent session id to folder id, loaded with the folder list.")
 
@@ -1816,8 +1848,9 @@ the id key."
     (let ((db (bp/agent-sessions--db))
           (assignments (make-hash-table :test 'equal)))
       (setq bp/agent-sessions--folders
-            (mapcar (lambda (row) (list :id (car row) :name (cadr row)))
-                    (sqlite-select db "SELECT id, name FROM folders ORDER BY name COLLATE NOCASE")))
+            (mapcar (lambda (row) (list :id (car row) :repo (cadr row)
+                                        :name (nth 2 row)))
+                    (sqlite-select db "SELECT id, repo, name FROM folders ORDER BY name COLLATE NOCASE")))
       (pcase-dolist (`(,sid ,folder-id)
                      (sqlite-select db "SELECT agent_sid, folder_id FROM session_folders"))
         (puthash sid folder-id assignments))
@@ -1829,6 +1862,21 @@ the id key."
   (bp/agent-sessions--load-folders)
   (seq-find (lambda (folder) (equal id (plist-get folder :id)))
             bp/agent-sessions--folders))
+
+(defun bp/agent-sessions--session-repo (session)
+  "Return the canonical repo root for SESSION, or nil outside a repo."
+  (bp/agent-sessions--canonical-path
+   (or (plist-get session :repo-root)
+       (plist-get session :worktree-path)
+       (let ((buf (plist-get session :buffer)))
+         (and (buffer-live-p buf)
+              (buffer-local-value 'default-directory buf))))))
+
+(defun bp/agent-sessions--folders-for-repo (repo)
+  "Return folders belonging to canonical REPO."
+  (bp/agent-sessions--load-folders)
+  (seq-filter (lambda (folder) (equal repo (plist-get folder :repo)))
+              bp/agent-sessions--folders))
 
 (defun bp/agent-sessions--folder-session-id (session)
   "Return SESSION's durable id, including an in-progress resume."
@@ -1843,17 +1891,23 @@ the id key."
   (let* ((buf (plist-get session :buffer))
          (sid (bp/agent-sessions--folder-session-id session))
          (saved (and sid (gethash sid bp/agent-sessions--folder-assignments))))
-    (or (and (bp/agent-sessions--folder saved) saved)
+    (or (and (equal (plist-get (bp/agent-sessions--folder saved) :repo)
+                    (bp/agent-sessions--session-repo session))
+             saved)
         (and (buffer-live-p buf)
-             (bp/agent-sessions--folder
-              (buffer-local-value 'bp/agent-session--folder-id buf))
+             (equal (plist-get (bp/agent-sessions--folder
+                                (buffer-local-value 'bp/agent-session--folder-id buf))
+                               :repo)
+                    (bp/agent-sessions--session-repo session))
              (buffer-local-value 'bp/agent-session--folder-id buf)))))
 
 (defun bp/agent-sessions--folder-set (session folder-id)
   "Assign SESSION to FOLDER-ID, or clear its assignment when nil."
   (bp/agent-sessions--load-folders)
-  (when (and folder-id (not (bp/agent-sessions--folder folder-id)))
-    (user-error "Folder no longer exists"))
+  (when (and folder-id
+             (not (equal (plist-get (bp/agent-sessions--folder folder-id) :repo)
+                         (bp/agent-sessions--session-repo session))))
+    (user-error "Folder does not belong to this repo"))
   (let ((sid (bp/agent-sessions--folder-session-id session))
         (buf (plist-get session :buffer)))
     (when sid
@@ -1876,31 +1930,54 @@ the id key."
   "Carry BUF's folder choice to AGENT-SID, or restore its saved folder."
   (when (and agent-sid (buffer-live-p buf))
     (bp/agent-sessions--load-folders)
-    (let ((saved (gethash agent-sid bp/agent-sessions--folder-assignments))
-          (local (buffer-local-value 'bp/agent-session--folder-id buf)))
+    (let* ((session (gethash (buffer-local-value 'bp/agent-session-id buf)
+                             bp/agent-sessions))
+           (repo (and session (bp/agent-sessions--session-repo session)))
+           (saved (gethash agent-sid bp/agent-sessions--folder-assignments))
+           (local (buffer-local-value 'bp/agent-session--folder-id buf))
+           (folder (bp/agent-sessions--folder saved)))
       (cond
-       ((bp/agent-sessions--folder saved)
+       ((and saved (equal (plist-get folder :repo) repo))
         (with-current-buffer buf
           (setq-local bp/agent-session--folder-id saved)))
-       ((bp/agent-sessions--folder local)
+       ;; A legacy global assignment without a matching log row has no repo
+       ;; until its agent appears.  Claim it for this repo at that point.
+       ((and folder repo (equal (plist-get folder :repo) ""))
+        (let ((target
+               (or (seq-find (lambda (item)
+                               (string-equal-ignore-case
+                                (plist-get item :name) (plist-get folder :name)))
+                             (bp/agent-sessions--folders-for-repo repo))
+                   (bp/agent-sessions--folder-create
+                    (plist-get folder :name) repo))))
+          (bp/agent-sessions--folder-set
+           (append (list :buffer buf :agent-session-id agent-sid)
+                   (list :repo-root repo))
+           (plist-get target :id))))
+       ((and local session
+             (equal (plist-get (bp/agent-sessions--folder local) :repo) repo))
         (bp/agent-sessions--folder-set
-         (list :buffer buf :agent-session-id agent-sid) local))))))
+         (append (list :buffer buf :agent-session-id agent-sid)
+                 (list :repo-root repo))
+         local))))))
 
-(defun bp/agent-sessions--folder-create (name)
-  "Create and return a global folder named NAME."
+(defun bp/agent-sessions--folder-create (name repo)
+  "Create and return a folder named NAME in canonical REPO."
   (bp/agent-sessions--load-folders)
   (setq name (string-trim name))
   (when (or (string-empty-p name)
             (string-equal-ignore-case name "No folder"))
     (user-error "Choose a different folder name"))
   (when (seq-find (lambda (folder)
-                    (string-equal-ignore-case name (plist-get folder :name)))
+                    (and (equal repo (plist-get folder :repo))
+                         (string-equal-ignore-case name (plist-get folder :name))))
                   bp/agent-sessions--folders)
     (user-error "Folder already exists: %s" name))
   (let ((db (bp/agent-sessions--db)))
-    (sqlite-execute db "INSERT INTO folders (name) VALUES (?)" (list name))
+    (sqlite-execute db "INSERT INTO folders (repo, name) VALUES (?, ?)"
+                    (list repo name))
     (let ((folder (list :id (caar (sqlite-select db "SELECT last_insert_rowid()"))
-                        :name name)))
+                        :repo repo :name name)))
       (push folder bp/agent-sessions--folders)
       folder)))
 
@@ -1912,6 +1989,7 @@ the id key."
     (user-error "Choose a different folder name"))
   (when (seq-find (lambda (other)
                     (and (not (equal (plist-get other :id) (plist-get folder :id)))
+                         (equal (plist-get other :repo) (plist-get folder :repo))
                          (string-equal-ignore-case name (plist-get other :name))))
                   bp/agent-sessions--folders)
     (user-error "Folder already exists: %s" name))
@@ -2963,31 +3041,45 @@ same path under another session by magit's parent chain."
 
 (defun bp/agent-sessions--build-tree (entries)
   "Group live ENTRIES into a list of repo plists for rendering.
-Each element is (:name NAME :root ROOT :worktrees (WORKTREE ...)).
-When `bp/agent-sessions-sort-by-activity' is set, every level is ordered
-most-recently-active first; otherwise the stable order of
-`bp/agent-sessions--sort-tree-stable' is used."
+Each element is (:name NAME :root ROOT :entries ENTRIES).
+When `bp/agent-sessions-sort-by-activity' is set, repos and sessions are
+ordered most-recently-active first; otherwise repos are alphabetical and
+sessions use attention and manual order."
   (let ((repos
          (mapcar
           (lambda (rg)
             (let* ((rentries (cdr rg))
                    (session (plist-get (car rentries) :session))
-                   (root (plist-get session :repo-root))
-                   (session-groups
-                    (seq-group-by
-                     (lambda (e) (bp/agent-sessions--canonical-path
-                                  (plist-get (plist-get e :session) :worktree-path)))
-                     rentries)))
+                   (root (bp/agent-sessions--session-repo session)))
               (list :name (or (plist-get session :repo) "?")
                     :root root
-                    :worktrees (bp/agent-sessions--worktrees-for root session-groups))))
+                    :entries rentries)))
           (seq-group-by
-           (lambda (e) (bp/agent-sessions--canonical-path
-                        (plist-get (plist-get e :session) :repo-root)))
+           (lambda (e) (bp/agent-sessions--session-repo
+                        (plist-get e :session)))
            entries))))
-    (if bp/agent-sessions-sort-by-activity
-        (bp/agent-sessions--sort-tree repos)
-      (bp/agent-sessions--sort-tree-stable repos))))
+    (let ((sorted
+           (mapcar
+            (lambda (repo)
+              (let ((items (plist-get repo :entries)))
+                (plist-put repo :entries
+                           (if bp/agent-sessions-sort-by-activity
+                               (bp/agent-sessions--by-recency
+                                #'bp/agent-sessions--entry-time items)
+                             (bp/agent-sessions--apply-manual-order
+                              (bp/agent-sessions--sessions-scope
+                               (bp/agent-sessions--repo-key repo) "")
+                              #'bp/agent-sessions--entry-buffer-name
+                              (bp/agent-sessions--sort-entries items))))))
+            repos)))
+      (if bp/agent-sessions-sort-by-activity
+          (bp/agent-sessions--by-recency
+           (lambda (repo) (bp/agent-sessions--entries-time
+                           (plist-get repo :entries))) sorted)
+        (bp/agent-sessions--apply-manual-order
+         bp/agent-sessions--repos-scope #'bp/agent-sessions--repo-key
+         (sort sorted (lambda (a b) (string< (plist-get a :name)
+                                            (plist-get b :name)))))))))
 
 (defun bp/agent-sessions--insert-worktree (wt)
   (let ((entries (plist-get wt :entries)))
@@ -3007,13 +3099,18 @@ most-recently-active first; otherwise the stable order of
                          (list :name (plist-get repo :name)
                                :root (plist-get repo :root)))
     (magit-insert-heading
-      (propertize (concat (if bp/agent-sessions-group-by-folder "  " "")
-                          (plist-get repo :name)) 'face 'bold))
+      (propertize (plist-get repo :name) 'face 'bold))
     (bp/agent-sessions--insert-note
      (list (bp/agent-sessions--repo-note-key repo))
-     (if bp/agent-sessions-group-by-folder "    " "  "))
-    (dolist (wt (plist-get repo :worktrees))
-      (bp/agent-sessions--insert-worktree wt))
+     "  ")
+    (if bp/agent-sessions-group-by-folder
+        (progn
+          (dolist (folder (bp/agent-sessions--folders-for-repo
+                           (bp/agent-sessions--repo-key repo)))
+            (bp/agent-sessions--insert-folder folder (plist-get repo :entries)))
+          (bp/agent-sessions--insert-folder
+           (list :id nil :name "No folder") (plist-get repo :entries)))
+      (bp/agent-sessions--insert-entries (plist-get repo :entries)))
     (insert "\n")))
 
 (defun bp/agent-sessions--folder-entries (folder entries)
@@ -3025,20 +3122,16 @@ most-recently-active first; otherwise the stable order of
               entries))
 
 (defun bp/agent-sessions--insert-folder (folder entries)
-  "Render FOLDER containing live ENTRIES across repositories."
+  "Render FOLDER containing live ENTRIES within its repo."
   (let* ((id (plist-get folder :id))
-         (members (bp/agent-sessions--folder-entries folder entries))
-         ;; Empty worktrees belong to the repo view, where `+' can target them.
-         (bp/agent-sessions-show-all-worktrees nil))
+         (members (bp/agent-sessions--folder-entries folder entries)))
     (magit-insert-section (bp/agent-session-folder id)
       (magit-insert-heading
-        (propertize (format "%s (%d)"
+        (propertize (format "  %s (%d)"
                             (or (plist-get folder :name) "No folder")
                             (length members))
                     'face 'bold))
-      (dolist (repo (bp/agent-sessions--build-tree members))
-        (bp/agent-sessions--insert-repo repo))
-      (insert "\n"))))
+      (bp/agent-sessions--insert-entries members))))
 
 (defun bp/agent-sessions--refresh ()
   (interactive)
@@ -3069,20 +3162,11 @@ most-recently-active first; otherwise the stable order of
     (setq bp/agent-sessions--row-status nil)
     (magit-insert-section (bp/agent-sessions-root)
       (let ((entries (bp/agent-sessions--live-entries)))
-        (if bp/agent-sessions-group-by-folder
-            (progn
-              (dolist (folder (sort (copy-sequence bp/agent-sessions--folders)
-                                    (lambda (a b)
-                                      (string-lessp (downcase (plist-get a :name))
-                                                    (downcase (plist-get b :name))))))
-                (bp/agent-sessions--insert-folder folder entries))
-              (bp/agent-sessions--insert-folder
-               (list :id nil :name "No folder") entries))
-          (let ((repos (bp/agent-sessions--build-tree entries)))
-            (if (null repos)
-                (insert "No active sessions.\n")
-              (dolist (repo repos)
-                (bp/agent-sessions--insert-repo repo)))))))
+        (let ((repos (bp/agent-sessions--build-tree entries)))
+          (if (null repos)
+              (insert "No active sessions.\n")
+            (dolist (repo repos)
+              (bp/agent-sessions--insert-repo repo))))))
     (setq bp/agent-sessions--row-status (nreverse bp/agent-sessions--row-status))
     ;; Freshly inserted sections carry the visibility magit cached for them
     ;; (e.g. a note folded with TAB) in their `hidden' slot, but nothing has
@@ -3595,14 +3679,17 @@ cycle is a poor way to reach a particular one."
                    "State cleared."))))))
 
 (defun bp/agent-sessions--context-at-point ()
-  "Return (:path DIR :name NAME) for the worktree/repo enclosing point, or nil.
-Walks up from the section at point so it works whether point is on a
-worktree heading, a repo heading, or an individual session row."
+  "Return (:path DIR :name NAME) for the session or repo at point."
   (let ((section (magit-current-section)))
     (catch 'found
       (while section
         (let ((value (oref section value)))
           (pcase (oref section type)
+            ('bp/agent-session-row
+             (when-let* ((session (bp/agent-sessions--session-for-id value))
+                         (path (plist-get session :worktree-path)))
+               (throw 'found (list :path path
+                                   :name (plist-get session :worktree)))))
             ('bp/agent-session-worktree
              (throw 'found (list :path (plist-get value :path)
                                  :name (plist-get value :label))))
@@ -3613,13 +3700,13 @@ worktree heading, a repo heading, or an individual session row."
       nil)))
 
 (defun bp/agent-sessions-toggle-folder-view ()
-  "Toggle between worktree and global folder grouping."
+  "Toggle between repo rows and repo/folder grouping."
   (interactive)
   (setq bp/agent-sessions-group-by-folder
         (not bp/agent-sessions-group-by-folder))
   (bp/agent-sessions--refresh)
   (message "Grouping by %s"
-           (if bp/agent-sessions-group-by-folder "folder" "repo and worktree")))
+           (if bp/agent-sessions-group-by-folder "repo and folder" "repo")))
 
 (defun bp/agent-sessions-folder-action ()
   "Move the session at point, manage a folder heading, or create a folder."
@@ -3629,6 +3716,10 @@ worktree heading, a repo heading, or an individual session row."
          (session (and row (bp/agent-sessions--session-for-id
                             (oref row value))))
          (section (magit-current-section))
+         (repo-section (bp/agent-sessions--enclosing-section
+                        'bp/agent-session-repo))
+         (repo (and repo-section
+                    (bp/agent-sessions--repo-key (oref repo-section value))))
          (folder (and section
                       (eq (oref section type) 'bp/agent-session-folder)
                       (bp/agent-sessions--folder (oref section value)))))
@@ -3638,8 +3729,9 @@ worktree heading, a repo heading, or an individual session row."
              (nearby (save-excursion
                        (goto-char (oref row start))
                        (bp/agent-sessions--nearby-session-id)))
-             (names (mapcar (lambda (item) (plist-get item :name))
-                            bp/agent-sessions--folders))
+             (session-repo (bp/agent-sessions--session-repo session))
+             (folders (bp/agent-sessions--folders-for-repo session-repo))
+             (names (mapcar (lambda (item) (plist-get item :name)) folders))
              (choice (completing-read
                       "Move session to folder: "
                       (append names '("No folder"))))
@@ -3650,8 +3742,8 @@ worktree heading, a repo heading, or an individual session row."
                     (t (or (seq-find (lambda (item)
                                        (string-equal-ignore-case
                                         choice (plist-get item :name)))
-                                     bp/agent-sessions--folders)
-                           (bp/agent-sessions--folder-create choice))))))
+                                     folders)
+                           (bp/agent-sessions--folder-create choice session-repo))))))
         (bp/agent-sessions--folder-set session (plist-get destination :id))
         (bp/agent-sessions--refresh)
         (or (and nearby (bp/agent-sessions--goto-session-id nearby))
@@ -3671,7 +3763,8 @@ worktree heading, a repo heading, or an individual session row."
            (bp/agent-sessions--folder-delete folder)
            (bp/agent-sessions--refresh)))))
      (t
-      (bp/agent-sessions--folder-create (read-string "New folder name: "))
+      (unless repo (user-error "Select a repo to create a folder"))
+      (bp/agent-sessions--folder-create (read-string "New folder name: ") repo)
       (bp/agent-sessions--refresh)))))
 
 (defun bp/agent-sessions--terminal-open (dir bufname)
@@ -3739,23 +3832,41 @@ displays its own point, not the buffer's."
           (set-window-point win (point)))))))
 
 (defun bp/agent-sessions-new-vterm ()
-  "Create a new vterm in the worktree at point, named after that worktree.
+  "Create a new vterm in the worktree at point.
 Leaves the dashboard's point on the new terminal's row, so the thing just
-created is what `k', `t', `e' and `n'/`p' act from.  A second `+' still opens
-a terminal in the same worktree, since `bp/agent-sessions--context-at-point'
-walks up from a session row to the worktree containing it."
+created is what `k', `t', `e' and `n'/`p' act from.  On a repo or folder
+heading, choose among that repo's worktrees."
   (interactive)
-  (let* ((ctx (bp/agent-sessions--context-at-point))
-         (dir (plist-get ctx :path))
+  (let* ((row (bp/agent-sessions--enclosing-section 'bp/agent-session-row))
+         (ctx (bp/agent-sessions--context-at-point))
          (folder-section (and bp/agent-sessions-group-by-folder
                               (bp/agent-sessions--enclosing-section
                                'bp/agent-session-folder)))
-         (folder-id (and folder-section (oref folder-section value))))
+         (folder-id (and folder-section (oref folder-section value)))
+         (repo-section (bp/agent-sessions--enclosing-section
+                        'bp/agent-session-repo))
+         (repo-root (and repo-section
+                         (plist-get (oref repo-section value) :root)))
+         (worktrees (and (not row) repo-root
+                         (bp/agent-sessions--all-worktrees repo-root)))
+         (selected (cond ((null worktrees) nil)
+                         ((= (length worktrees) 1) (car worktrees))
+                         (t (let* ((labels (mapcar (lambda (wt)
+                                                     (plist-get wt :label))
+                                                   worktrees))
+                                   (choice (completing-read "Worktree: " labels
+                                                            nil t)))
+                              (seq-find (lambda (wt)
+                                          (equal choice (plist-get wt :label)))
+                                        worktrees)))))
+         (dir (or (plist-get selected :path) (plist-get ctx :path)))
+         (name (or (plist-get selected :label) (plist-get ctx :name))))
     (if (or (null dir) (not (file-directory-p dir)))
         (message "No worktree at point.")
-      (let ((buf (bp/agent-sessions--create-terminal dir (plist-get ctx :name))))
+      (let ((buf (bp/agent-sessions--create-terminal dir name)))
         (when folder-id
-          (bp/agent-sessions--folder-set (list :buffer buf) folder-id)
+          (bp/agent-sessions--folder-set
+           (list :buffer buf :repo-root repo-root) folder-id)
           (bp/agent-sessions--refresh-if-visible))
         (bp/agent-sessions--goto-terminal-row buf)))))
 
@@ -3906,20 +4017,11 @@ are exactly what the next render will order."
                        (plist-get repo :worktrees))
                (bp/agent-sessions--worktree-key (oref section value)))))
       ('bp/agent-session-row
-       (let* ((wt-sec (bp/agent-sessions--enclosing-section
-                       'bp/agent-session-worktree))
-              (wkey (and wt-sec repo
-                         (bp/agent-sessions--worktree-key (oref wt-sec value))))
-              (wt (and wkey
-                       (seq-find (lambda (w)
-                                   (equal wkey
-                                          (bp/agent-sessions--worktree-key w)))
-                                 (plist-get repo :worktrees))))
-              (session (bp/agent-sessions--session-for-id (oref section value))))
-         (when (and wt session)
-           (list (bp/agent-sessions--sessions-scope rkey wkey)
+       (let ((session (bp/agent-sessions--session-for-id (oref section value))))
+         (when (and repo session)
+           (list (bp/agent-sessions--sessions-scope rkey "")
                  (mapcar #'bp/agent-sessions--entry-buffer-name
-                         (plist-get wt :entries))
+                         (plist-get repo :entries))
                  (bp/agent-sessions--session-buffer-name session)))))
       ('bp/agent-session-file
        (let* ((row (bp/agent-sessions--enclosing-section 'bp/agent-session-row))
