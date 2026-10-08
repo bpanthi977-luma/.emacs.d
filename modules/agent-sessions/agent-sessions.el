@@ -1891,7 +1891,7 @@ the id key."
   (bp/agent-sessions--load-folders)
   (setq name (string-trim name))
   (when (or (string-empty-p name)
-            (member (downcase name) '("no folder" "create new folder...")))
+            (string-equal-ignore-case name "No folder"))
     (user-error "Choose a different folder name"))
   (when (seq-find (lambda (folder)
                     (string-equal-ignore-case name (plist-get folder :name)))
@@ -1908,7 +1908,7 @@ the id key."
   "Rename FOLDER to NAME."
   (setq name (string-trim name))
   (when (or (string-empty-p name)
-            (member (downcase name) '("no folder" "create new folder...")))
+            (string-equal-ignore-case name "No folder"))
     (user-error "Choose a different folder name"))
   (when (seq-find (lambda (other)
                     (and (not (equal (plist-get other :id) (plist-get folder :id)))
@@ -3634,22 +3634,28 @@ worktree heading, a repo heading, or an individual session row."
                       (bp/agent-sessions--folder (oref section value)))))
     (cond
      (session
-      (let* ((names (mapcar (lambda (item) (plist-get item :name))
+      (let* ((row-id (oref row value))
+             (nearby (save-excursion
+                       (goto-char (oref row start))
+                       (bp/agent-sessions--nearby-session-id)))
+             (names (mapcar (lambda (item) (plist-get item :name))
                             bp/agent-sessions--folders))
              (choice (completing-read
                       "Move session to folder: "
-                      (append names '("No folder" "Create new folder..."))
-                      nil t))
+                      (append names '("No folder"))))
              (destination
-              (cond ((equal choice "No folder") nil)
-                    ((equal choice "Create new folder...")
-                     (bp/agent-sessions--folder-create
-                      (read-string "New folder name: ")))
-                    (t (seq-find (lambda (item)
-                                   (equal choice (plist-get item :name)))
-                                 bp/agent-sessions--folders)))))
+              (cond ((string-equal-ignore-case choice "No folder") nil)
+                    ((string-empty-p (string-trim choice))
+                     (user-error "Enter a folder name"))
+                    (t (or (seq-find (lambda (item)
+                                       (string-equal-ignore-case
+                                        choice (plist-get item :name)))
+                                     bp/agent-sessions--folders)
+                           (bp/agent-sessions--folder-create choice))))))
         (bp/agent-sessions--folder-set session (plist-get destination :id))
-        (bp/agent-sessions--refresh)))
+        (bp/agent-sessions--refresh)
+        (or (and nearby (bp/agent-sessions--goto-session-id nearby))
+            (bp/agent-sessions--goto-session-id row-id))))
      (folder
       (pcase (completing-read
               (format "%s: " (plist-get folder :name))
