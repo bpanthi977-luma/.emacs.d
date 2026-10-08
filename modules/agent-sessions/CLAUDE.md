@@ -20,6 +20,16 @@ code says *what* it does; this file records *why*, so the intent survives edits.
   before redesigning this, not as a description of what is here.
 - Wiring/config is in `../agent-session-config.el`.
 
+## Live Emacs safety
+
+**Never kill, signal, restart, or force-quit the user's Emacs process or server.**
+This includes sending `SIGINT` to interrupt a hung diagnostic. If an
+`emacsclient` call hangs, stop only that client invocation or leave it alone;
+do not target the Emacs process with `kill`, `pkill`, or `killall`. Stop live
+diagnostics and tell the user if the server is unresponsive. Continue with
+isolated batch Emacs tests where possible, leaving the user's live sessions
+untouched.
+
 ## Why it's built this way
 
 **Zero-friction tracking beats an explicit launcher.** Rather than a wrapper
