@@ -1837,6 +1837,8 @@ the id key."
 ;; terminal keeps its choice on the buffer until an agent supplies an id.
 
 (defvar bp/agent-sessions--folders-loaded-p nil)
+(defvar bp/agent-sessions--folders-cache-version nil
+  "Schema version used to populate the in-memory folder cache.")
 (defvar bp/agent-sessions--folders nil
   "List of (:id ID :repo ROOT :name NAME) folders, loaded once from SQLite.")
 (defvar bp/agent-sessions--folder-assignments nil
@@ -1844,6 +1846,15 @@ the id key."
 
 (defun bp/agent-sessions--load-folders ()
   "Load folder choices once; subsequent dashboard renders use memory only."
+  ;; Reloading this module does not reset `defvar' values in a running Emacs.
+  ;; A pre-migration cache has folders without :repo and ids that no longer
+  ;; match SQLite after the global-to-repo migration.
+  (when (and bp/agent-sessions--folders-loaded-p
+             (or (not (eql bp/agent-sessions--folders-cache-version
+                           bp/agent-sessions--schema-version))
+                 (seq-some (lambda (folder) (not (plist-member folder :repo)))
+                           bp/agent-sessions--folders)))
+    (setq bp/agent-sessions--folders-loaded-p nil))
   (unless bp/agent-sessions--folders-loaded-p
     (let ((db (bp/agent-sessions--db))
           (assignments (make-hash-table :test 'equal)))
@@ -1855,7 +1866,9 @@ the id key."
                      (sqlite-select db "SELECT agent_sid, folder_id FROM session_folders"))
         (puthash sid folder-id assignments))
       (setq bp/agent-sessions--folder-assignments assignments
-            bp/agent-sessions--folders-loaded-p t))))
+            bp/agent-sessions--folders-loaded-p t
+            bp/agent-sessions--folders-cache-version
+            bp/agent-sessions--schema-version))))
 
 (defun bp/agent-sessions--folder (id)
   "Return the saved folder with ID, or nil."
@@ -1962,23 +1975,29 @@ the id key."
          local))))))
 
 (defun bp/agent-sessions--folder-create (name repo)
-  "Create and return a folder named NAME in canonical REPO."
+  "Create or find a folder named NAME in canonical REPO."
   (bp/agent-sessions--load-folders)
   (setq name (string-trim name))
   (when (or (string-empty-p name)
             (string-equal-ignore-case name "No folder"))
     (user-error "Choose a different folder name"))
-  (when (seq-find (lambda (folder)
-                    (and (equal repo (plist-get folder :repo))
-                         (string-equal-ignore-case name (plist-get folder :name))))
-                  bp/agent-sessions--folders)
-    (user-error "Folder already exists: %s" name))
+  (unless repo (user-error "Select a repo to create a folder"))
   (let ((db (bp/agent-sessions--db)))
-    (sqlite-execute db "INSERT INTO folders (repo, name) VALUES (?, ?)"
+    ;; SQLite is authoritative if another Emacs has created this folder since
+    ;; we loaded our cache.  Return its existing id in that case.
+    (sqlite-execute db "INSERT INTO folders (repo, name) VALUES (?, ?)
+                        ON CONFLICT(repo, name) DO NOTHING"
                     (list repo name))
-    (let ((folder (list :id (caar (sqlite-select db "SELECT last_insert_rowid()"))
-                        :repo repo :name name)))
-      (push folder bp/agent-sessions--folders)
+    (pcase-let* ((`(,id ,saved-name)
+                  (car (sqlite-select db
+                       "SELECT id, name FROM folders
+                         WHERE repo = ? AND name = ? COLLATE NOCASE"
+                       (list repo name))))
+                 (folder (or (bp/agent-sessions--folder id)
+                             (list :id id :repo repo :name saved-name))))
+      (plist-put folder :name saved-name)
+      (unless (member folder bp/agent-sessions--folders)
+        (push folder bp/agent-sessions--folders))
       folder)))
 
 (defun bp/agent-sessions--folder-rename (folder name)
