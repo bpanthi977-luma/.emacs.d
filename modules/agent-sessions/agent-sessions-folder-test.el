@@ -121,4 +121,82 @@
         (kill-buffer dashboard)
         (delete-directory root t)))))
 
+(ert-deftest bp/agent-sessions-folder-action-creates-an-unmatched-name ()
+  (bp/agent-sessions-folder-test--with-db
+    (let* ((terminal (generate-new-buffer " *folder-choice-terminal*"))
+           (dashboard (generate-new-buffer " *folder-choice-dashboard*"))
+           (bp/agent-sessions (make-hash-table :test 'equal))
+           (session (list :buffer terminal :agent-session-id "choice-thread")))
+      (unwind-protect
+          (progn
+            (puthash "choice-terminal" session bp/agent-sessions)
+            (with-current-buffer dashboard
+              (bp/agent-sessions-mode)
+              (let ((inhibit-read-only t))
+                (magit-insert-section (bp/agent-sessions-root)
+                  (magit-insert-section (bp/agent-session-row "choice-terminal")
+                    (magit-insert-heading "session\n"))))
+              (goto-char (point-min))
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (&rest _) "Cross repo work"))
+                        ((symbol-function 'bp/agent-sessions--refresh) #'ignore))
+                (bp/agent-sessions-folder-action))
+              (let* ((folder (car bp/agent-sessions--folders))
+                     (id (plist-get folder :id)))
+                (should (equal "Cross repo work" (plist-get folder :name)))
+                (should (equal id (bp/agent-sessions--folder-for-session session)))
+                (cl-letf (((symbol-function 'completing-read)
+                           (lambda (&rest _) "cross repo work"))
+                          ((symbol-function 'bp/agent-sessions--refresh) #'ignore))
+                  (bp/agent-sessions-folder-action))
+                (should (= 1 (length bp/agent-sessions--folders)))
+                (cl-letf (((symbol-function 'completing-read)
+                           (lambda (&rest _) "No folder"))
+                          ((symbol-function 'bp/agent-sessions--refresh) #'ignore))
+                  (bp/agent-sessions-folder-action))
+                (should-not (bp/agent-sessions--folder-for-session session)))))
+        (kill-buffer terminal)
+        (kill-buffer dashboard)))))
+
+(ert-deftest bp/agent-sessions-folder-action-focuses-nearby-chat ()
+  (bp/agent-sessions-folder-test--with-db
+    (let* ((root (make-temp-file "agent-folder-focus-" t))
+           (terminal-a (generate-new-buffer " *folder-focus-a*"))
+           (terminal-b (generate-new-buffer " *folder-focus-b*"))
+           (dashboard (generate-new-buffer " *folder-focus-dashboard*"))
+           (bp/agent-sessions (make-hash-table :test 'equal))
+           (bp/agent-sessions--states nil)
+           (bp/agent-sessions--notes nil)
+           (bp/agent-sessions--shared-files nil)
+           (bp/agent-sessions--shared-links nil)
+           (bp/agent-sessions-show-all-worktrees nil)
+           (choice "Work")
+           (a (list :buffer terminal-a :agent-session-id "focus-a"
+                    :agent-type "codex" :status 'stopped :repo "repo"
+                    :repo-root root :worktree "worktree" :worktree-path root))
+           (b (list :buffer terminal-b :agent-session-id "focus-b"
+                    :agent-type "codex" :status 'stopped :repo "repo"
+                    :repo-root root :worktree "worktree" :worktree-path root))
+           (entries (list (list :id "a" :session a :title "First")
+                          (list :id "b" :session b :title "Second"))))
+      (unwind-protect
+          (progn
+            (puthash "a" a bp/agent-sessions)
+            (puthash "b" b bp/agent-sessions)
+            (with-current-buffer dashboard
+              (bp/agent-sessions-mode)
+              (let ((bp/agent-sessions-group-by-folder t))
+                (cl-letf (((symbol-function 'bp/agent-sessions--live-entries)
+                           (lambda () entries))
+                          ((symbol-function 'completing-read)
+                           (lambda (&rest _) choice)))
+                  (bp/agent-sessions--refresh)
+                  (should (bp/agent-sessions--goto-session-id "a"))
+                  (bp/agent-sessions-folder-action)
+                  (should (equal "b" (oref (magit-current-section) value)))
+                  (bp/agent-sessions-folder-action)
+                  (should (equal "a" (oref (magit-current-section) value)))))))
+        (mapc #'kill-buffer (list terminal-a terminal-b dashboard))
+        (delete-directory root t)))))
+
 ;;; agent-sessions-folder-test.el ends here
