@@ -9,6 +9,7 @@
   `(let* ((bp/agent-sessions-db-file (make-temp-file "agent-folders-"))
           (bp/agent-sessions--db nil)
           (bp/agent-sessions--folders-loaded-p nil)
+          (bp/agent-sessions--folders-cache-version nil)
           (bp/agent-sessions--folders nil)
           (bp/agent-sessions--folder-assignments nil)
           (bp/agent-sessions--order nil))
@@ -53,6 +54,34 @@
         (mapc #'kill-buffer (list a-buf b-buf))
         (delete-directory a-root t)
         (delete-directory b-root t)))))
+
+(ert-deftest bp/folders-create-recovers-stale-cache ()
+  (bp/folder-test-with-db
+    (let* ((root (make-temp-file "repo-stale-cache-" t))
+           (repo (bp/agent-sessions--canonical-path root)))
+      (unwind-protect
+          (let* ((existing (bp/agent-sessions--folder-create "Work" repo))
+                 (id (plist-get existing :id)))
+            ;; A module reload can leave the old global-folder cache in Emacs.
+            (setq bp/agent-sessions--folders (list (list :id id :name "Work"))
+                  bp/agent-sessions--folders-loaded-p t)
+            (should (equal id (plist-get
+                               (bp/agent-sessions--folder-create "work" repo)
+                               :id)))
+            (should (equal repo (plist-get (car bp/agent-sessions--folders)
+                                           :repo)))
+            ;; A second Emacs may create a folder after this cache was loaded.
+            (sqlite-execute (bp/agent-sessions--db)
+                            "INSERT INTO folders (repo, name) VALUES (?, ?)"
+                            (list repo "Other"))
+            (let ((other (bp/agent-sessions--folder-create "other" repo)))
+              (should (equal "Other" (plist-get other :name)))
+              (should (equal 2 (length bp/agent-sessions--folders))))
+            (setq bp/agent-sessions--folders nil
+                  bp/agent-sessions--folders-loaded-p t
+                  bp/agent-sessions--folders-cache-version nil)
+            (should (equal 2 (length (bp/agent-sessions--folders-for-repo repo)))))
+        (delete-directory root t)))))
 
 (ert-deftest bp/folders-render-repo-folder-and-worktree-column ()
   (bp/folder-test-with-db
