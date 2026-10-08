@@ -4010,19 +4010,21 @@ See `bp/agent-sessions-move-down'."
 With point inside a repo, worktree, or on a session row, clears just that
 item's group; with a prefix argument, clears every group."
   (interactive)
-  (let ((table (bp/agent-sessions--order-table)))
-    (if current-prefix-arg
-        (progn (clrhash table)
-               (bp/agent-sessions--order-delete-all)
-               (bp/agent-sessions--refresh)
-               (message "Manual order cleared everywhere."))
-      (pcase (bp/agent-sessions--group-at-point)
-        (`(,scope ,_ ,_)
-         (remhash scope table)
-         (bp/agent-sessions--order-delete-group scope)
-         (bp/agent-sessions--refresh)
-         (message "Manual order cleared for this group."))
-        (_ (message "Point is not in a reorderable group."))))))
+  (if bp/agent-sessions-group-by-folder
+      (message "Manual order is available in the repo view (press `f').")
+    (let ((table (bp/agent-sessions--order-table)))
+      (if current-prefix-arg
+          (progn (clrhash table)
+                 (bp/agent-sessions--order-delete-all)
+                 (bp/agent-sessions--refresh)
+                 (message "Manual order cleared everywhere."))
+        (pcase (bp/agent-sessions--group-at-point)
+          (`(,scope ,_ ,_)
+           (remhash scope table)
+           (bp/agent-sessions--order-delete-group scope)
+           (bp/agent-sessions--refresh)
+           (message "Manual order cleared for this group."))
+          (_ (message "Point is not in a reorderable group.")))))))
 
 ;;;###autoload
 (defun bp/agent-session-rename-to-title ()
