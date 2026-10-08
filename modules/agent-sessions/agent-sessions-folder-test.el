@@ -98,7 +98,9 @@
                  (session (list :buffer terminal :agent-session-id "render"
                                 :agent-type "codex" :status 'stopped
                                 :repo "sample-repo" :repo-root root
-                                :worktree "sample-worktree" :worktree-path root))
+                                :worktree "sample-worktree (feature/test)"
+                                :worktree-name "sample-worktree"
+                                :branch "feature/test" :worktree-path root))
                  (entry (list :id "render" :session session :title "Task")))
             (bp/agent-sessions--folder-set session (plist-get folder :id))
             (with-current-buffer dashboard
@@ -110,14 +112,143 @@
                   (should (string-match-p "sample-repo\n  Tasks (1)"
                                           (buffer-string)))
                   (should (string-match-p "No folder (0)" (buffer-string)))
-                  (should (string-match-p "sample-worktree.*Task"
+                  (should (string-match-p "sample-worktree.*Task  (feature/test)"
                                           (buffer-string))))
                 (let ((bp/agent-sessions-group-by-folder nil))
                   (bp/agent-sessions--refresh)
-                  (should (string-match-p "sample-worktree.*Task.*\\[Tasks\\]"
-                                          (buffer-string)))))))
+                  (should (string-match-p
+                           (concat (regexp-quote
+                                    "  sample-worktree (feature/test)\n")
+                                   "    sample-worktree.*Task.*\\[Tasks\\].*feature/test")
+                           (buffer-string)))))))
         (mapc #'kill-buffer (list terminal dashboard))
         (delete-directory root t)))))
+
+(ert-deftest bp/folders-worktree-column-follows-longest-name ()
+  (bp/folder-test-with-db
+    (let* ((root (make-temp-file "repo-width-" t))
+           (a (generate-new-buffer " *width-a*"))
+           (b (generate-new-buffer " *width-b*"))
+           (dashboard (generate-new-buffer " *width-dashboard*"))
+           (entries (list
+                     (list :id "a" :title "First task"
+                           :session (list :buffer a :repo "repo" :repo-root root
+                                          :worktree-name "short" :worktree-path root))
+                     (list :id "b" :title "Second task"
+                           :session (list :buffer b :repo "repo" :repo-root root
+                                          :worktree-name "long-worktree-name"
+                                          :worktree-path root)))))
+      (unwind-protect
+          (with-current-buffer dashboard
+            (bp/agent-sessions-mode)
+            (let ((bp/agent-sessions-group-by-folder t))
+              (cl-letf (((symbol-function 'bp/agent-sessions--live-entries)
+                         (lambda () entries)))
+                (bp/agent-sessions--refresh)
+                (should (= bp/agent-sessions--worktree-column-width 19))
+                (let ((lines (split-string (buffer-string) "\n" t)))
+                  (should (seq-some
+                           (lambda (line)
+                             (string-match-p
+                              "^    short +  .*First task$" line))
+                           lines))
+                  (should (seq-some
+                           (lambda (line)
+                             (string-match-p
+                              "^    long-worktree-name +  .*Second task$" line))
+                           lines))))))
+        (mapc #'kill-buffer (list a b dashboard))
+        (delete-directory root t)))))
+
+(ert-deftest bp/folders-manual-order-is-persisted-per-folder ()
+  (bp/folder-test-with-db
+    (let* ((repo (bp/agent-sessions--canonical-path
+                  (make-temp-file "folder-order-repo-" t)))
+           (a (generate-new-buffer " *folder-order-a*"))
+           (b (generate-new-buffer " *folder-order-b*"))
+           (dashboard (generate-new-buffer " *folder-order-dashboard*"))
+           (one (bp/agent-sessions--folder-create "One" repo))
+           (two (bp/agent-sessions--folder-create "Two" repo))
+           (a-session (list :buffer a :repo "repo" :repo-root repo
+                            :worktree-path repo :agent-session-id "a"))
+           (b-session (list :buffer b :repo "repo" :repo-root repo
+                            :worktree-path repo :agent-session-id "b"))
+           (bp/agent-sessions (make-hash-table :test 'equal))
+           (entries (list (list :id "a" :title "First" :session a-session)
+                          (list :id "b" :title "Second" :session b-session))))
+      (unwind-protect
+          (progn
+            (puthash "a" a-session bp/agent-sessions)
+            (puthash "b" b-session bp/agent-sessions)
+            (bp/agent-sessions--folder-set a-session (plist-get one :id))
+            (bp/agent-sessions--folder-set b-session (plist-get one :id))
+            (with-current-buffer dashboard
+              (bp/agent-sessions-mode)
+              (let ((bp/agent-sessions-group-by-folder t))
+                (cl-letf (((symbol-function 'bp/agent-sessions--live-entries)
+                           (lambda () entries)))
+                  (bp/agent-sessions--refresh)
+                  (should (< (save-excursion (goto-char (point-min))
+                                             (search-forward "One (2)"))
+                             (save-excursion (goto-char (point-min))
+                                             (search-forward "Two (0)"))))
+                  (goto-char (point-min))
+                  (search-forward "Two (0)")
+                  (beginning-of-line)
+                  (bp/agent-sessions-move-up)
+                  (should (< (save-excursion (goto-char (point-min))
+                                             (search-forward "Two (0)"))
+                             (save-excursion (goto-char (point-min))
+                                             (search-forward "One (2)"))))
+                  (should (< (save-excursion (goto-char (point-min))
+                                             (search-forward "First"))
+                             (save-excursion (goto-char (point-min))
+                                             (search-forward "Second"))))
+                  (goto-char (point-min))
+                  (search-forward "First")
+                  (beginning-of-line)
+                  (bp/agent-sessions-move-down)
+                  (should (< (save-excursion (goto-char (point-min))
+                                             (search-forward "Second"))
+                             (save-excursion (goto-char (point-min))
+                                             (search-forward "First"))))
+                  (setq bp/agent-sessions--order nil)
+                  (bp/agent-sessions--refresh)
+                  (should (< (save-excursion (goto-char (point-min))
+                                             (search-forward "Second"))
+                             (save-excursion (goto-char (point-min))
+                                             (search-forward "First"))))))))
+        (mapc #'kill-buffer (list a b dashboard))
+        (delete-directory repo t)))))
+
+(ert-deftest bp/folders-shift-tab-toggles-expanded-and-closed-views ()
+  (with-temp-buffer
+    (bp/agent-sessions-mode)
+    (let ((inhibit-read-only t))
+      (magit-insert-section (bp/agent-sessions-root)
+        (magit-insert-section (bp/agent-session-repo '(:name "repo"))
+          (magit-insert-heading "repo")
+          (magit-insert-section (bp/agent-session-folder 1)
+            (magit-insert-heading "folder")
+            (magit-insert-section (bp/agent-session-row "s")
+              (magit-insert-heading "session")
+              (magit-insert-section (bp/agent-session-file "/tmp/file" t)
+                (magit-insert-heading "file"))
+              (magit-insert-section (bp/agent-session-link "https://example.com" t)
+                (magit-insert-heading "link")))))))
+    (let* ((repo (car (oref magit-root-section children)))
+           (folder (car (oref repo children)))
+           (session (car (oref folder children)))
+           (attachments (oref session children)))
+      (should (eq (lookup-key bp/agent-sessions-mode-map (kbd "<backtab>"))
+                  #'bp/agent-sessions-toggle-overview))
+      (bp/agent-sessions-toggle-overview)
+      (should-not (oref repo hidden))
+      (should-not (oref folder hidden))
+      (should-not (oref session hidden))
+      (should (cl-every (lambda (section) (oref section hidden)) attachments))
+      (bp/agent-sessions-toggle-overview)
+      (should (oref repo hidden)))))
 
 (ert-deftest bp/folders-action-creates-in-session-repo ()
   (bp/folder-test-with-db
