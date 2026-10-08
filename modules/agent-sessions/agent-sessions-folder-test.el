@@ -3,8 +3,8 @@
 (require 'ert)
 (require 'agent-sessions)
 
-(defmacro bp/agent-sessions-folder-test--with-db (&rest body)
-  "Run BODY with an isolated folder database and caches."
+(defmacro bp/folder-test-with-db (&rest body)
+  "Run BODY with an isolated database."
   (declare (indent 0))
   `(let* ((bp/agent-sessions-db-file (make-temp-file "agent-folders-"))
           (bp/agent-sessions--db nil)
@@ -12,8 +12,7 @@
           (bp/agent-sessions--folders nil)
           (bp/agent-sessions--folder-assignments nil)
           (bp/agent-sessions--order nil))
-     (unwind-protect
-         (progn ,@body)
+     (unwind-protect (progn ,@body)
        (when (sqlitep bp/agent-sessions--db)
          (sqlite-close bp/agent-sessions--db))
        (dolist (path (list bp/agent-sessions-db-file
@@ -21,87 +20,57 @@
                           (concat bp/agent-sessions-db-file "-shm")))
          (when (file-exists-p path) (delete-file path))))))
 
-(ert-deftest bp/agent-sessions-folders-group-across-repos-and-persist ()
-  (bp/agent-sessions-folder-test--with-db
-    (let* ((root-a (make-temp-file "agent-repo-a-" t))
-           (root-b (make-temp-file "agent-repo-b-" t))
-           (buf-a (generate-new-buffer " *folder-a*"))
-           (buf-b (generate-new-buffer " *folder-b*"))
-           (buf-c (generate-new-buffer " *folder-c*")))
+(ert-deftest bp/folders-repo-scoping-and-persistence ()
+  (bp/folder-test-with-db
+    (let* ((a-root (make-temp-file "repo-a-" t))
+           (b-root (make-temp-file "repo-b-" t))
+           (a-buf (generate-new-buffer " *a*"))
+           (b-buf (generate-new-buffer " *b*")))
       (unwind-protect
-          (let* ((folder (bp/agent-sessions--folder-create "Migration cleanup"))
-                 (id (plist-get folder :id))
-                 (a (list :buffer buf-a :agent-session-id "folder-thread-a"
-                          :repo "repo-a" :repo-root root-a
-                          :worktree "a" :worktree-path root-a))
-                 (b (list :buffer buf-b :agent-session-id "folder-thread-b"
-                          :repo "repo-b" :repo-root root-b
-                          :worktree "b" :worktree-path root-b))
-                 (c (list :buffer buf-c :agent-session-id "folder-thread-c"
-                          :repo "repo-a" :repo-root root-a
-                          :worktree "a" :worktree-path root-a))
-                 (entries (list (list :id "a" :session a)
-                                (list :id "b" :session b)
-                                (list :id "c" :session c))))
-            (bp/agent-sessions--folder-set a id)
-            (bp/agent-sessions--folder-set b id)
-            (should (= 2 (length (bp/agent-sessions--folder-entries folder entries))))
-            (should (= 2 (length (bp/agent-sessions--build-tree
-                                  (bp/agent-sessions--folder-entries folder entries)))))
-            (should (equal '("c")
-                           (mapcar (lambda (e) (plist-get e :id))
-                                   (bp/agent-sessions--folder-entries
-                                    (list :id nil) entries))))
-            (bp/agent-sessions--folder-rename folder "Cross repo")
+          (let* ((a-repo (bp/agent-sessions--canonical-path a-root))
+                 (b-repo (bp/agent-sessions--canonical-path b-root))
+                 (a-folder (bp/agent-sessions--folder-create "Work" a-repo))
+                 (b-folder (bp/agent-sessions--folder-create "Work" b-repo))
+                 (a (list :buffer a-buf :agent-session-id "a" :repo-root a-root))
+                 (b (list :buffer b-buf :agent-session-id "b" :repo-root b-root)))
+            (should-not (equal (plist-get a-folder :id) (plist-get b-folder :id)))
+            (bp/agent-sessions--folder-set a (plist-get a-folder :id))
+            (bp/agent-sessions--folder-set b (plist-get b-folder :id))
+            (should-error (bp/agent-sessions--folder-set a (plist-get b-folder :id)))
+            (bp/agent-sessions--folder-rename a-folder "Renamed")
             (sqlite-close bp/agent-sessions--db)
             (setq bp/agent-sessions--db nil
-                  bp/agent-sessions--folders-loaded-p nil
-                  bp/agent-sessions--folders nil
-                  bp/agent-sessions--folder-assignments nil)
-            (should (equal "Cross repo"
-                           (plist-get (bp/agent-sessions--folder id) :name)))
-            (should (equal id (bp/agent-sessions--folder-for-session a)))
-            (bp/agent-sessions--folder-delete (bp/agent-sessions--folder id))
+                  bp/agent-sessions--folders-loaded-p nil)
+            (should (equal "Renamed" (plist-get
+                                       (bp/agent-sessions--folder
+                                        (plist-get a-folder :id)) :name)))
+            (should (equal (plist-get b-folder :id)
+                           (bp/agent-sessions--folder-for-session b)))
+            (bp/agent-sessions--folder-delete
+             (bp/agent-sessions--folder (plist-get a-folder :id)))
             (should-not (bp/agent-sessions--folder-for-session a))
-            (should-not (bp/agent-sessions--folder-for-session b)))
-        (mapc #'kill-buffer (list buf-a buf-b buf-c))
-        (delete-directory root-a t)
-        (delete-directory root-b t)))))
+            (should (bp/agent-sessions--folder-for-session b)))
+        (mapc #'kill-buffer (list a-buf b-buf))
+        (delete-directory a-root t)
+        (delete-directory b-root t)))))
 
-(ert-deftest bp/agent-sessions-folders-follow-a-terminal-into-its-agent-id ()
-  (bp/agent-sessions-folder-test--with-db
-    (let ((buf (generate-new-buffer " *folder-terminal*")))
-      (unwind-protect
-          (let* ((id (plist-get (bp/agent-sessions--folder-create "Project") :id))
-                 (plain (list :buffer buf))
-                 (agent (list :buffer buf :agent-session-id "durable-thread")))
-            (bp/agent-sessions--folder-set plain id)
-            (should (equal id (bp/agent-sessions--folder-for-session plain)))
-            (bp/agent-sessions--folder-hydrate buf "durable-thread")
-            (should (equal id (bp/agent-sessions--folder-for-session agent)))
-            (with-current-buffer buf (setq-local bp/agent-session--folder-id nil))
-            (should (equal id (bp/agent-sessions--folder-for-session agent)))
-            (bp/agent-sessions--folder-set agent nil)
-            (should-not (bp/agent-sessions--folder-for-session agent)))
-        (kill-buffer buf)))))
-
-(ert-deftest bp/agent-sessions-folders-render-both-views ()
-  (bp/agent-sessions-folder-test--with-db
-    (let* ((root (make-temp-file "agent-folder-render-" t))
-           (terminal (generate-new-buffer " *folder-render-terminal*"))
-           (dashboard (generate-new-buffer " *folder-render-dashboard*"))
+(ert-deftest bp/folders-render-repo-folder-and-worktree-column ()
+  (bp/folder-test-with-db
+    (let* ((root (make-temp-file "repo-render-" t))
+           (terminal (generate-new-buffer " *render-terminal*"))
+           (dashboard (generate-new-buffer " *render-dashboard*"))
            (bp/agent-sessions--states nil)
            (bp/agent-sessions--notes nil)
            (bp/agent-sessions--shared-files nil)
-           (bp/agent-sessions--shared-links nil)
-           (bp/agent-sessions-show-all-worktrees nil))
+           (bp/agent-sessions--shared-links nil))
       (unwind-protect
-          (let* ((folder (bp/agent-sessions--folder-create "Across repos"))
-                 (session (list :buffer terminal :agent-session-id "render-thread"
+          (let* ((folder (bp/agent-sessions--folder-create
+                          "Tasks" (bp/agent-sessions--canonical-path root)))
+                 (session (list :buffer terminal :agent-session-id "render"
                                 :agent-type "codex" :status 'stopped
                                 :repo "sample-repo" :repo-root root
                                 :worktree "sample-worktree" :worktree-path root))
-                 (entry (list :id "render-terminal" :session session :title "Task")))
+                 (entry (list :id "render" :session session :title "Task")))
             (bp/agent-sessions--folder-set session (plist-get folder :id))
             (with-current-buffer dashboard
               (bp/agent-sessions-mode)
@@ -109,94 +78,91 @@
                          (lambda () (list entry))))
                 (let ((bp/agent-sessions-group-by-folder t))
                   (bp/agent-sessions--refresh)
-                  (should (string-match-p
-                           "Across repos (1)\n  sample-repo"
-                           (buffer-string)))
-                  (should (string-match-p "No folder (0)" (buffer-string))))
+                  (should (string-match-p "sample-repo\n  Tasks (1)"
+                                          (buffer-string)))
+                  (should (string-match-p "No folder (0)" (buffer-string)))
+                  (should (string-match-p "sample-worktree.*Task"
+                                          (buffer-string))))
                 (let ((bp/agent-sessions-group-by-folder nil))
                   (bp/agent-sessions--refresh)
-                  (should (string-match-p "Task.*\\[Across repos\\]"
+                  (should (string-match-p "sample-worktree.*Task.*\\[Tasks\\]"
                                           (buffer-string)))))))
-        (kill-buffer terminal)
-        (kill-buffer dashboard)
+        (mapc #'kill-buffer (list terminal dashboard))
         (delete-directory root t)))))
 
-(ert-deftest bp/agent-sessions-folder-action-creates-an-unmatched-name ()
-  (bp/agent-sessions-folder-test--with-db
-    (let* ((terminal (generate-new-buffer " *folder-choice-terminal*"))
-           (dashboard (generate-new-buffer " *folder-choice-dashboard*"))
+(ert-deftest bp/folders-action-creates-in-session-repo ()
+  (bp/folder-test-with-db
+    (let* ((root (make-temp-file "repo-action-" t))
+           (terminal (generate-new-buffer " *action-terminal*"))
+           (dashboard (generate-new-buffer " *action-dashboard*"))
            (bp/agent-sessions (make-hash-table :test 'equal))
-           (session (list :buffer terminal :agent-session-id "choice-thread")))
+           (session (list :buffer terminal :agent-session-id "action"
+                          :repo-root root :worktree-path root)))
       (unwind-protect
           (progn
-            (puthash "choice-terminal" session bp/agent-sessions)
+            (puthash "action" session bp/agent-sessions)
             (with-current-buffer dashboard
               (bp/agent-sessions-mode)
               (let ((inhibit-read-only t))
                 (magit-insert-section (bp/agent-sessions-root)
-                  (magit-insert-section (bp/agent-session-row "choice-terminal")
+                  (magit-insert-section (bp/agent-session-row "action")
                     (magit-insert-heading "session\n"))))
               (goto-char (point-min))
               (cl-letf (((symbol-function 'completing-read)
-                         (lambda (&rest _) "Cross repo work"))
+                         (lambda (&rest _) "New task"))
                         ((symbol-function 'bp/agent-sessions--refresh) #'ignore))
                 (bp/agent-sessions-folder-action))
-              (let* ((folder (car bp/agent-sessions--folders))
-                     (id (plist-get folder :id)))
-                (should (equal "Cross repo work" (plist-get folder :name)))
-                (should (equal id (bp/agent-sessions--folder-for-session session)))
-                (cl-letf (((symbol-function 'completing-read)
-                           (lambda (&rest _) "cross repo work"))
-                          ((symbol-function 'bp/agent-sessions--refresh) #'ignore))
-                  (bp/agent-sessions-folder-action))
-                (should (= 1 (length bp/agent-sessions--folders)))
-                (cl-letf (((symbol-function 'completing-read)
-                           (lambda (&rest _) "No folder"))
-                          ((symbol-function 'bp/agent-sessions--refresh) #'ignore))
-                  (bp/agent-sessions-folder-action))
-                (should-not (bp/agent-sessions--folder-for-session session)))))
-        (kill-buffer terminal)
-        (kill-buffer dashboard)))))
+              (should (equal (bp/agent-sessions--canonical-path root)
+                             (plist-get (car bp/agent-sessions--folders) :repo)))
+              (should (bp/agent-sessions--folder-for-session session))))
+        (mapc #'kill-buffer (list terminal dashboard))
+        (delete-directory root t)))))
 
-(ert-deftest bp/agent-sessions-folder-action-focuses-nearby-chat ()
-  (bp/agent-sessions-folder-test--with-db
-    (let* ((root (make-temp-file "agent-folder-focus-" t))
-           (terminal-a (generate-new-buffer " *folder-focus-a*"))
-           (terminal-b (generate-new-buffer " *folder-focus-b*"))
-           (dashboard (generate-new-buffer " *folder-focus-dashboard*"))
-           (bp/agent-sessions (make-hash-table :test 'equal))
-           (bp/agent-sessions--states nil)
-           (bp/agent-sessions--notes nil)
-           (bp/agent-sessions--shared-files nil)
-           (bp/agent-sessions--shared-links nil)
-           (bp/agent-sessions-show-all-worktrees nil)
-           (choice "Work")
-           (a (list :buffer terminal-a :agent-session-id "focus-a"
-                    :agent-type "codex" :status 'stopped :repo "repo"
-                    :repo-root root :worktree "worktree" :worktree-path root))
-           (b (list :buffer terminal-b :agent-session-id "focus-b"
-                    :agent-type "codex" :status 'stopped :repo "repo"
-                    :repo-root root :worktree "worktree" :worktree-path root))
-           (entries (list (list :id "a" :session a :title "First")
-                          (list :id "b" :session b :title "Second"))))
+(ert-deftest bp/folders-migrate-global-assignments-by-repo ()
+  (bp/folder-test-with-db
+    (let ((db (sqlite-open bp/agent-sessions-db-file)))
       (unwind-protect
           (progn
-            (puthash "a" a bp/agent-sessions)
-            (puthash "b" b bp/agent-sessions)
-            (with-current-buffer dashboard
-              (bp/agent-sessions-mode)
-              (let ((bp/agent-sessions-group-by-folder t))
-                (cl-letf (((symbol-function 'bp/agent-sessions--live-entries)
-                           (lambda () entries))
-                          ((symbol-function 'completing-read)
-                           (lambda (&rest _) choice)))
-                  (bp/agent-sessions--refresh)
-                  (should (bp/agent-sessions--goto-session-id "a"))
-                  (bp/agent-sessions-folder-action)
-                  (should (equal "b" (oref (magit-current-section) value)))
-                  (bp/agent-sessions-folder-action)
-                  (should (equal "a" (oref (magit-current-section) value)))))))
-        (mapc #'kill-buffer (list terminal-a terminal-b dashboard))
+            (sqlite-execute db "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+            (sqlite-execute db "INSERT INTO meta VALUES ('schema_version', '2')")
+            (sqlite-execute db "CREATE TABLE folders (
+              id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE)")
+            (sqlite-execute db "CREATE TABLE session_folders (
+              agent_sid TEXT PRIMARY KEY, folder_id INTEGER NOT NULL)")
+            (sqlite-execute db "CREATE TABLE sessions (
+              id INTEGER PRIMARY KEY, agent_sid TEXT, repo TEXT)")
+            (sqlite-execute db "INSERT INTO folders VALUES (1, 'Work')")
+            (sqlite-execute db "INSERT INTO session_folders VALUES ('a', 1), ('b', 1)")
+            (sqlite-execute db "INSERT INTO sessions VALUES
+              (1, 'a', '/repo-a/'), (2, 'b', '/repo-b/')")
+            (bp/agent-sessions--db-migrate db)
+            (should (equal '(3) (car (sqlite-select db
+               "SELECT COUNT(*) FROM folders"))))
+            (should (equal '(("/repo-a/") ("/repo-b/"))
+                           (sqlite-select db "SELECT f.repo FROM session_folders sf
+                             JOIN folders f ON f.id = sf.folder_id
+                             ORDER BY sf.agent_sid"))))
+        (sqlite-close db)))))
+
+(ert-deftest bp/folders-carry-terminal-choice-into-agent-id ()
+  (bp/folder-test-with-db
+    (let* ((root (make-temp-file "repo-hydrate-" t))
+           (buf (generate-new-buffer " *hydrate*"))
+           (bp/agent-sessions (make-hash-table :test 'equal))
+           (terminal-id "terminal"))
+      (unwind-protect
+          (let* ((folder (bp/agent-sessions--folder-create
+                          "Work" (bp/agent-sessions--canonical-path root)))
+                 (session (list :buffer buf :repo-root root :worktree-path root)))
+            (with-current-buffer buf (setq-local bp/agent-session-id terminal-id))
+            (puthash terminal-id session bp/agent-sessions)
+            (bp/agent-sessions--folder-set session (plist-get folder :id))
+            (bp/agent-sessions--folder-hydrate buf "agent-id")
+            (should (equal (plist-get folder :id)
+                           (bp/agent-sessions--folder-for-session
+                            (plist-put (copy-sequence session)
+                                       :agent-session-id "agent-id")))))
+        (kill-buffer buf)
         (delete-directory root t)))))
 
 ;;; agent-sessions-folder-test.el ends here
