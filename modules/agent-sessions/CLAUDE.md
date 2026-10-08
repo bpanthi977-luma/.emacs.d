@@ -213,24 +213,33 @@ uses only keys that are stable under activity: a coarse attention bucket
 (error → needs-attention → running → rest), then buffer creation time, then
 buffer name as a deterministic final tie-break (hash iteration order must never
 leak into the layout). A row *does* move when its status changes — that's a
-rare, meaningful event, unlike a tool call. Repos and worktrees are plain
-alphabetical: a fixed skeleton is what makes the tree navigable from memory, so
-urgency is expressed only *within* a worktree. Recency sort survives behind `s`
+rare, meaningful event, unlike a tool call. Repos are alphabetical, and worktree
+is a column on each session row. Recency sort survives behind `s`
 for when you want it; don't make it the default again.
 
 **Manual order overrides the automatic one per group, and only per group.**
-`M-n`/`M-p` move the repo / worktree / row at point within its own siblings and
+`M-n`/`M-p` move the repo or row at point within its own siblings and
 persist that group's key list. Design points worth keeping: items with no
 recorded key keep the automatic order and sort *after* the placed ones, so a new
 session never displaces a slot the user chose; rewriting a group splices the
 visible keys back into the saved list instead of replacing it, so a repo or
-worktree whose terminals are all closed doesn't lose its remembered slot; and
+session whose terminal is closed doesn't lose its remembered slot; and
 keys are stable identities (canonical paths, buffer name for a row) rather than
 display labels, which change on a branch checkout. Reordering acts on the flat
-per-worktree list that `--insert-entries` then nests, so moving a *fork* row
+per-repo list that `--insert-entries` then nests, so moving a *fork* row
 past a sibling of its parent's group may not visibly move it — the nesting wins.
 Manual order is disabled while `s` (recency) is active; those two orderings
 would fight, and recency should stay a temporary lens.
+
+**Folders belong to repos.** The default view is repo → session with each
+session's worktree and folder visible on its row. `f` gives repo → folder →
+session, including a No folder group under each repo; worktree stays a column.
+`F` on a row moves it to a folder in that repo and creates an unmatched name.
+`F` on a folder heading renames or deletes that repo's folder. Folder names may
+repeat in different repos. SQLite schema version 3 migrates the old global
+assignments using the session log's repo root, splitting a global folder when
+its members belong to multiple repos. A legacy assignment with no logged repo
+is claimed by its repo when that session next appears.
 
 **A stray key closes the dispatch menu instead of trapping you in it.** `RET`
 on a repo/worktree heading opens project.el's switch menu, whose own
