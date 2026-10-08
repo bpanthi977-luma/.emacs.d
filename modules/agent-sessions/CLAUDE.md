@@ -234,8 +234,10 @@ would fight, and recency should stay a temporary lens.
 **Folders belong to repos.** The default view is repo → worktree → session, with
 the session's folder shown on its row. `f` gives repo → folder → session,
 including a No folder group under each repo. Both views put the worktree name
-first on each row and the branch after the title. `Shift+TAB` toggles closed
-repo headings and an expanded view that leaves files and links folded.
+first on each row and the branch after the title. `Shift+TAB` advances one
+hierarchy level at a time: repos, folders or worktrees, sessions, then files
+and links. At the deepest level it cycles back to repos only. The cycle skips
+absent levels and survives a dashboard refresh.
 `F` on a row moves it to a folder in that repo and creates an unmatched name.
 `F` on a folder heading renames or deletes that repo's folder. Folder names may
 repeat in different repos. SQLite schema version 3 migrates the old global
