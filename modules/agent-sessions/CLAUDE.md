@@ -213,8 +213,9 @@ uses only keys that are stable under activity: a coarse attention bucket
 (error → needs-attention → running → rest), then buffer creation time, then
 buffer name as a deterministic final tie-break (hash iteration order must never
 leak into the layout). A row *does* move when its status changes — that's a
-rare, meaningful event, unlike a tool call. Repos and worktrees are alphabetical,
-and each row starts with a dynamically sized worktree column. Recency sort survives behind `s`
+rare, meaningful event, unlike a tool call. Repos and worktrees are alphabetical.
+Folder view rows start with a dynamically sized worktree column. Recency sort
+survives behind `s`
 for when you want it; don't make it the default again.
 
 **Manual order overrides the automatic one per group, and only per group.**
@@ -233,8 +234,10 @@ would fight, and recency should stay a temporary lens.
 
 **Folders belong to repos.** The default view is repo → worktree → session, with
 the session's folder shown on its row. `f` gives repo → folder → session,
-including a No folder group under each repo. Both views put the worktree name
-first on each row and the branch after the title. `Shift+TAB` advances one
+including a No folder group under each repo. Folder view rows put the worktree
+name first and the branch after the title; the non-folder view has neither on
+session rows because its worktree heading provides that context. `Shift+TAB`
+advances one
 hierarchy level at a time: repos, folders or worktrees, sessions, then files
 and links. At the deepest level it cycles back to repos only. The cycle skips
 absent levels and survives a dashboard refresh.
