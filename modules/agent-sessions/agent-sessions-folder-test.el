@@ -119,8 +119,13 @@
                   (should (string-match-p
                            (concat (regexp-quote
                                     "  sample-worktree (feature/test)\n")
-                                   "    sample-worktree.*Task.*\\[Tasks\\].*feature/test")
+                                   "    .*Task.*\\[Tasks\\]")
                            (buffer-string)))
+                  (let ((row (seq-find
+                              (lambda (line) (string-match-p "Task" line))
+                              (split-string (buffer-string) "\n" t))))
+                    (should-not (string-match-p "sample-worktree" row))
+                    (should-not (string-match-p "feature/test" row)))
                   (setq bp/agent-sessions--overview-level 1)
                   (bp/agent-sessions--refresh)
                   (let* ((repo-section
