@@ -3272,6 +3272,12 @@ same path under another session by magit's parent chain."
     ;; cache off so re-showing doesn't record the state it is restoring.
     (let ((magit-section-cache-visibility nil))
       (magit-section-show magit-root-section))
+    (when bp/agent-sessions--overview-level
+      (setq bp/agent-sessions--overview-level
+            (min bp/agent-sessions--overview-level
+                 (bp/agent-sessions--overview-max-level)))
+      (bp/agent-sessions--show-overview-level
+       bp/agent-sessions--overview-level))
     (let ((target (and ident (magit-get-section ident))))
       (if (not target)
           (goto-char (point-min))
@@ -3290,28 +3296,77 @@ same path under another session by magit's parent chain."
       (when wstart
         (set-window-start win (min wstart (point-max)) t)))))
 
-(defvar-local bp/agent-sessions--expanded-view-p nil
-  "Non-nil after Shift+TAB selects the expanded dashboard view.")
+(defvar-local bp/agent-sessions--overview-level nil
+  "Current Shift+TAB level, from 0 (repos only) to the deepest open level.")
+
+(defun bp/agent-sessions--overview-depth (section parent-depth)
+  "Return SECTION's hierarchy depth, inheriting it for auxiliary sections."
+  (pcase (oref section type)
+    ('bp/agent-session-repo 0)
+    ((or 'bp/agent-session-folder 'bp/agent-session-worktree) 1)
+    ('bp/agent-session-row 2)
+    ((or 'bp/agent-session-file 'bp/agent-session-link) 3)
+    (_ parent-depth)))
+
+(defun bp/agent-sessions--overview-max-level ()
+  "Return the deepest hierarchy level in this dashboard's section tree."
+  (let ((maximum 0))
+    (cl-labels ((visit (section parent-depth)
+                  (let ((depth (bp/agent-sessions--overview-depth
+                                section parent-depth)))
+                    (setq maximum (max maximum depth))
+                    (dolist (child (oref section children))
+                      (visit child depth)))))
+      (visit magit-root-section -1))
+    maximum))
+
+(defun bp/agent-sessions--show-overview-level (level)
+  "Show dashboard hierarchy to LEVEL, opening everything at its maximum."
+  (let ((maximum (bp/agent-sessions--overview-max-level)))
+    (cl-labels ((set-visibility (section parent-depth)
+                (let ((depth (bp/agent-sessions--overview-depth
+                              section parent-depth)))
+                  (unless (eq section magit-root-section)
+                    (oset section hidden
+                          (and (< level maximum) (<= level depth)))
+                    (magit-section-maybe-cache-visibility section))
+                  (dolist (child (oref section children))
+                    (set-visibility child depth)))))
+      (set-visibility magit-root-section -1)))
+  (magit-section-show magit-root-section))
+
+(defun bp/agent-sessions--visible-overview-level ()
+  "Return the current uniform hierarchy level, or -1 for a mixed view."
+  (let ((maximum (bp/agent-sessions--overview-max-level)))
+    (cl-labels ((matches (section parent-depth level)
+                  (let* ((depth (bp/agent-sessions--overview-depth
+                                 section parent-depth))
+                         (expected-hidden
+                          (and (< level maximum) (<= level depth))))
+                    (and (or (eq section magit-root-section)
+                             (eq (not (null (oref section hidden)))
+                                 (not (null expected-hidden))))
+                         (or (and (not (eq section magit-root-section))
+                                  expected-hidden)
+                             (cl-every (lambda (child)
+                                         (matches child depth level))
+                                       (oref section children)))))))
+      (or (seq-find (lambda (level)
+                      (matches magit-root-section -1 level))
+                    (number-sequence 0 maximum))
+          -1))))
 
 (defun bp/agent-sessions-toggle-overview ()
-  "Toggle repo headings and an expanded view with files and links folded."
+  "Cycle repos, groups, sessions, and attachments with Shift+TAB."
   (interactive)
   (unless magit-root-section
     (user-error "No dashboard sections to toggle"))
-  (if bp/agent-sessions--expanded-view-p
-      (progn
-        (magit-section-hide-children magit-root-section)
-        (setq bp/agent-sessions--expanded-view-p nil))
-    (cl-labels ((expand (section)
-                  (oset section hidden
-                        (memq (oref section type)
-                              '(bp/agent-session-file bp/agent-session-link)))
-                  (magit-section-maybe-cache-visibility section)
-                  (dolist (child (oref section children))
-                    (expand child))))
-      (expand magit-root-section))
-    (magit-section-show magit-root-section)
-    (setq bp/agent-sessions--expanded-view-p t)))
+  (setq bp/agent-sessions--overview-level
+        (mod (1+ (or bp/agent-sessions--overview-level
+                     (bp/agent-sessions--visible-overview-level)))
+             (1+ (bp/agent-sessions--overview-max-level))))
+  (bp/agent-sessions--show-overview-level
+   bp/agent-sessions--overview-level))
 
 (defun bp/agent-sessions--reread-repo-info ()
   "Re-read repo/branch info from disk for every live session buffer.
@@ -5981,6 +6036,8 @@ out one that is already taken — or hide one that just became available."
 (define-key bp/agent-sessions-mode-map (kbd "R") #'bp/agent-sessions-restore)
 (define-key bp/agent-sessions-mode-map (kbd "g") #'bp/agent-sessions-refresh)
 (define-key bp/agent-sessions-mode-map (kbd "<backtab>")
+  #'bp/agent-sessions-toggle-overview)
+(define-key bp/agent-sessions-mode-map (kbd "<S-tab>")
   #'bp/agent-sessions-toggle-overview)
 (define-key bp/agent-sessions-mode-map (kbd "s") #'bp/agent-sessions-toggle-sort)
 (define-key bp/agent-sessions-mode-map (kbd "f") #'bp/agent-sessions-toggle-folder-view)
