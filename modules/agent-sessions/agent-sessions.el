@@ -1025,8 +1025,10 @@ indentation conveys the relationship."
       (magit-insert-heading
         (bp/agent-sessions--row-text
          (concat base indent
-                 (format (format "%%-%ds" bp/agent-sessions--worktree-column-width)
-                         (bp/agent-sessions--session-worktree-name session))
+                 (when bp/agent-sessions-group-by-folder
+                   (format
+                    (format "%%-%ds" bp/agent-sessions--worktree-column-width)
+                    (bp/agent-sessions--session-worktree-name session)))
                  marker
                  (format "%-7s %-16s "
                          (or (plist-get session :agent-type) "") status))
@@ -1038,7 +1040,8 @@ indentation conveys the relationship."
                  (if (and branched-from (not suppress-parent-note))
                      (format "  ↳ from %s" (cdr branched-from))
                    "")
-                 (if-let ((branch (bp/agent-sessions--session-branch session)))
+                 (if-let ((branch (and bp/agent-sessions-group-by-folder
+                                      (bp/agent-sessions--session-branch session))))
                      (format "  (%s)" branch)
                    ""))
          face))
