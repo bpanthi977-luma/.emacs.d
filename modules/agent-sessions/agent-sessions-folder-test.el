@@ -127,6 +127,7 @@
                     (should-not (string-match-p "sample-worktree" row))
                     (should-not (string-match-p "feature/test" row)))
                   (setq bp/agent-sessions--overview-level 1)
+                  (bp/agent-sessions--show-overview-level 1)
                   (bp/agent-sessions--refresh)
                   (let* ((repo-section
                           (car (oref magit-root-section children)))
@@ -135,6 +136,7 @@
                     (should-not (oref repo-section hidden))
                     (should (oref worktree-section hidden)))
                   (setq bp/agent-sessions--overview-level 3)
+                  (bp/agent-sessions--show-overview-level 3)
                   (bp/agent-sessions--refresh)
                   (should (= bp/agent-sessions--overview-level 2))))))
         (mapc #'kill-buffer (list terminal dashboard))
@@ -318,6 +320,46 @@
       (bp/agent-sessions-toggle-overview)
       (should (= bp/agent-sessions--overview-level 0))
       (should (oref repo hidden)))))
+
+(ert-deftest bp/folders-manually-opened-session-survives-refresh ()
+  (bp/folder-test-with-db
+    (let* ((root (make-temp-file "repo-visible-" t))
+           (path (make-temp-file "shared-visible-"))
+           (terminal (generate-new-buffer " *visible-terminal*"))
+           (dashboard (generate-new-buffer " *visible-dashboard*"))
+           (session (list :buffer terminal :agent-session-id "visible"
+                          :repo "repo" :repo-root root :worktree "worktree"
+                          :worktree-path root))
+           (entry (list :id "visible" :title "Task" :session session)))
+      (unwind-protect
+          (with-current-buffer dashboard
+            (bp/agent-sessions-mode)
+            (let ((bp/agent-sessions-group-by-folder nil))
+              (cl-letf (((symbol-function 'bp/agent-sessions--live-entries)
+                         (lambda () (list entry)))
+                        ((symbol-function 'bp/agent-sessions--session-files)
+                         (lambda (_) (list (list :path path :visited-at 1)))))
+                (bp/agent-sessions--refresh)
+                (setq bp/agent-sessions--overview-level 2)
+                (bp/agent-sessions--show-overview-level 2)
+                (let* ((repo (car (oref magit-root-section children)))
+                       (worktree (car (oref repo children)))
+                       (row (car (oref worktree children))))
+                  (should (oref row hidden))
+                  ;; Opening one row with TAB must survive an unrelated hook
+                  ;; refresh while the global Shift+TAB level stays at two.
+                  (magit-section-show row))
+                (bp/agent-sessions--refresh)
+                (let* ((repo (car (oref magit-root-section children)))
+                       (worktree (car (oref repo children)))
+                       (row (car (oref worktree children))))
+                  (should-not (oref row hidden))
+                  (goto-char (point-min))
+                  (search-forward (file-name-nondirectory path))
+                  (should-not (invisible-p (1- (point))))))))
+        (mapc #'kill-buffer (list terminal dashboard))
+        (delete-file path)
+        (delete-directory root t)))))
 
 (ert-deftest bp/folders-action-creates-in-session-repo ()
   (bp/folder-test-with-db
