@@ -241,6 +241,9 @@ advances one
 hierarchy level at a time: repos, folders or worktrees, sessions, then files
 and links. At the deepest level it cycles back to repos only. The cycle skips
 absent levels and survives a dashboard refresh.
+Manual TAB expansion of an individual section also survives refresh: Magit's
+visibility cache records it, so a hook-driven render must not reapply the
+global Shift+TAB level over those individual choices.
 `F` on a row moves it to a folder in that repo and creates an unmatched name.
 `F` on a folder heading renames or deletes that repo's folder. Folder names may
 repeat in different repos. SQLite schema version 3 migrates the old global
