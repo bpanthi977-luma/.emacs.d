@@ -3275,12 +3275,13 @@ same path under another session by magit's parent chain."
     ;; cache off so re-showing doesn't record the state it is restoring.
     (let ((magit-section-cache-visibility nil))
       (magit-section-show magit-root-section))
+    ;; The Shift+TAB cycle caches its visibility choices, as does a manual
+    ;; TAB on one session.  Reapplying the global level here would overwrite
+    ;; that per-session choice on every hook-driven refresh.
     (when bp/agent-sessions--overview-level
       (setq bp/agent-sessions--overview-level
             (min bp/agent-sessions--overview-level
-                 (bp/agent-sessions--overview-max-level)))
-      (bp/agent-sessions--show-overview-level
-       bp/agent-sessions--overview-level))
+                 (bp/agent-sessions--overview-max-level))))
     (let ((target (and ident (magit-get-section ident))))
       (if (not target)
           (goto-char (point-min))
