@@ -581,6 +581,18 @@ Linear tickets and PRs; each URL has its own row. Exact re-registration is a
 true no-op and preserves the read state; changing a URL's label marks that row
 unread again while keeping its position. A new URL adds a new row.
 
+`emacs-share state STATE|--clear` sets the session's workflow state, the same
+field `t` cycles. The middle of `bp/agent-sessions-states` is the
+issue-workflow skill's phases, so an agent running it reports each transition
+and the column shows whose turn it is; the *-REVIEW states and `PR-OPEN` are the
+skill's gates, where the agent has stopped for the user. **One field, last
+writer wins.** The agent overwrites a state the user set by hand on its next
+transition, and the user can override the agent at any time with `t`; a
+separate agent-owned column would show two answers to "where is this session"
+and leave the user to reconcile them. A state outside the list is refused, not
+stored, because an agent typo would otherwise render as a plausible-looking
+unstyled state that no `t` cycle passes through.
+
 **It is attached to the session, by the session's most durable identity.** The
 key is `--session-note-keys` reused verbatim — the agent's own session id when
 it has one, the buffer name otherwise, reading both and collapsing onto the
