@@ -2235,6 +2235,34 @@ under that id rather than one per identity it has had."
            (nth (1+ (seq-position states state)) states))
           (t (car states)))))
 
+;;;###autoload
+(defun bp/agent-sessions-share-state (session-id state &optional
+                                                 agent-session-id)
+  "Set the workflow state of the session in terminal SESSION-ID to STATE.
+The `emacs-share state' entry point: an agent reports where it is, writing the
+same per-session state `t' sets, so whichever of the two wrote last wins.
+STATE must be one of `bp/agent-sessions-states'; an empty STATE clears it.
+SESSION-ID and AGENT-SESSION-ID resolve as in `bp/agent-sessions-share-link'.
+Returns a printable status string, since emacsclient's value is the agent's
+only channel back."
+  (let ((session (bp/agent-sessions--session-for-share
+                  session-id agent-session-id))
+        (state (and state (not (string-empty-p state)) state)))
+    (cond
+     ((null session)
+      (if (and agent-session-id (not (string-empty-p agent-session-id)))
+          (format "No Emacs agent session registered for agent id %s"
+                  agent-session-id)
+        (format "No Emacs terminal registered for session id %s" session-id)))
+     ((and state (not (member state bp/agent-sessions-states)))
+      (format "Unknown state `%s'; expected one of %s"
+              state (string-join bp/agent-sessions-states ", ")))
+     (t
+      (bp/agent-sessions--state-set
+       (bp/agent-sessions--session-note-keys session) state)
+      (bp/agent-sessions--refresh-if-visible)
+      (if state (format "State: %s" state) "State cleared")))))
+
 (defface bp/agent-session-note
   '((t :inherit font-lock-comment-face))
   "Face for a note attached to a repo, worktree, or session row.")
