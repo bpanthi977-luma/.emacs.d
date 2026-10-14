@@ -2120,12 +2120,19 @@ one note per identity it has had."
         (sqlite-execute db "DELETE FROM notes WHERE kind = ? AND key = ?"
                         (car keys))))))
 
-(defcustom bp/agent-sessions-states '("TODO" "BLOCKED" "DONE" "REVIEW" "LEARN")
+(defcustom bp/agent-sessions-states
+  '("TODO" "PLANNING" "PLAN-REVIEW" "IMPLEMENTING" "IMPL-REVIEW" "PR-OPEN"
+    "AUTOFIX" "REVIEW" "DONE" "BLOCKED" "LEARN")
   "Workflow states a session can be in, in the order `t' cycles them.
 `t' moves a session to the next one and off the end back to no state, so the
 order is the only thing that decides how many presses a given state costs.  No
 state is a state — a session nobody has triaged should not have to claim to be
-anything."
+anything.
+
+PLANNING through DONE follow the phases of the issue-workflow skill, in its
+order, so an agent running it can report where it is with `emacs-share
+state'.  The *-REVIEW states and PR-OPEN are its gates: the agent has stopped
+and the next move is the user's."
   :type '(repeat string))
 
 (defface bp/agent-session-state-todo '((t :inherit org-todo))
@@ -2136,6 +2143,33 @@ anything."
 
 (defface bp/agent-session-state-review '((t :inherit bold :foreground "#7aa2f7"))
   "Face for the REVIEW state: waiting on someone else to look.")
+
+(defface bp/agent-session-state-plan-review
+  '((t :inherit bp/agent-session-state-review))
+  "Face for the PLAN-REVIEW state: the plan is waiting on the user.")
+
+(defface bp/agent-session-state-impl-review
+  '((t :inherit bp/agent-session-state-review))
+  "Face for the IMPL-REVIEW state: the implementation is waiting on the user.")
+
+(defface bp/agent-session-state-pr-open
+  '((t :inherit bp/agent-session-state-review))
+  "Face for the PR-OPEN state: the PR is up and waiting on the user.")
+
+(defface bp/agent-session-state-working '((t :inherit shadow))
+  "Face shared by the states in which the agent, not the user, holds the work.")
+
+(defface bp/agent-session-state-planning
+  '((t :inherit bp/agent-session-state-working))
+  "Face for the PLANNING state.")
+
+(defface bp/agent-session-state-implementing
+  '((t :inherit bp/agent-session-state-working))
+  "Face for the IMPLEMENTING state.")
+
+(defface bp/agent-session-state-autofix
+  '((t :inherit bp/agent-session-state-working))
+  "Face for the AUTOFIX state.")
 
 (defface bp/agent-session-state-learn '((t :inherit bold :foreground "#bb9af7"))
   "Face for the LEARN state: finished, but there is something here to take away.")
@@ -3832,8 +3866,8 @@ Clearing it (entering an empty string) restores the agent's live title."
 (defun bp/agent-sessions-cycle-state ()
   "Move the session at point to the next workflow state.
 Cycles through `bp/agent-sessions-states' and off the end back to no state.
-With a prefix argument, pick a state directly instead — with five of them, a
-cycle is a poor way to reach a particular one."
+With a prefix argument, pick a state directly instead — with this many of
+them, a cycle is a poor way to reach a particular one."
   (interactive)
   (let* ((session (bp/agent-sessions--session-at-point))
          (keys (and session (bp/agent-sessions--session-note-keys session))))
