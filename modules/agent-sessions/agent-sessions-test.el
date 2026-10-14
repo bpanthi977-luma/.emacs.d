@@ -954,5 +954,59 @@
     (should (eq (lookup-key bp/agent-sessions-mode-map (kbd "w"))
                 #'bp/agent-sessions-copy-attachment))))
 
+(ert-deftest bp/agent-sessions-share-state-sets-and-clears ()
+  (let ((session (list :agent-session-id "thread-1"))
+        writes refreshes)
+    (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+               (lambda (_) session))
+              ((symbol-function 'bp/agent-sessions--state-set)
+               (lambda (keys state) (push (list keys state) writes)))
+              ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+               (lambda () (setq refreshes (1+ (or refreshes 0))))))
+      (should (equal "State: PLAN-REVIEW"
+                     (bp/agent-sessions-share-state "terminal" "PLAN-REVIEW")))
+      (should (equal "State cleared"
+                     (bp/agent-sessions-share-state "terminal" "")))
+      (should (equal (nreverse writes)
+                     (list (list (bp/agent-sessions--session-note-keys session)
+                                 "PLAN-REVIEW")
+                           (list (bp/agent-sessions--session-note-keys session)
+                                 nil))))
+      (should (= refreshes 2)))))
+
+(ert-deftest bp/agent-sessions-share-state-refuses-unknown-state ()
+  (let ((session (list :agent-session-id "thread-1"))
+        written)
+    (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+               (lambda (_) session))
+              ((symbol-function 'bp/agent-sessions--state-set)
+               (lambda (&rest _) (setq written t)))
+              ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+               #'ignore))
+      (let ((reply (bp/agent-sessions-share-state "terminal" "MERGED")))
+        (should (string-prefix-p "Unknown state `MERGED'" reply))
+        (should (string-match-p "PLAN-REVIEW" reply)))
+      (should-not written))))
+
+(ert-deftest bp/agent-sessions-share-state-without-session ()
+  (cl-letf (((symbol-function 'bp/agent-sessions--session-for-share)
+             (lambda (&rest _) nil)))
+    (should (string-prefix-p
+             "No Emacs terminal registered"
+             (bp/agent-sessions-share-state "terminal" "DONE")))
+    (should (string-prefix-p
+             "No Emacs agent session registered for agent id thread-1"
+             (bp/agent-sessions-share-state "terminal" "DONE" "thread-1")))))
+
+(ert-deftest bp/agent-sessions-states-cycle-in-workflow-order ()
+  (let ((seen nil) (state nil))
+    (dotimes (_ (1+ (length bp/agent-sessions-states)))
+      (setq state (bp/agent-sessions--next-state state))
+      (push state seen))
+    (should (equal (nreverse seen)
+                   '("TODO" "PLANNING" "PLAN-REVIEW" "IMPLEMENTING"
+                     "IMPL-REVIEW" "PR-OPEN" "AUTOFIX" "REVIEW" "DONE"
+                     "BLOCKED" "LEARN" nil)))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
