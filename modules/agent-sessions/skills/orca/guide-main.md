@@ -1,19 +1,75 @@
 # Coordinating and messaging agents from an Emacs terminal
 
-You are the **coordinator** when supervising dispatched work. The same protocol
-also lets peer agents exchange messages without a parent/worker relationship.
 You run in a terminal Emacs owns, and can start other agents, give each one a
 task, send agent mail, and block until a reply or report arrives. Your tool is
 `emacs-agent`, already on your PATH. Everything it does goes through the Emacs
-that owns this terminal, so the human sees every worker you start in the same
-dashboard (`M-x bp/agent-sessions-list`), marked as yours.
+that owns this terminal, so the human sees every agent you start or message in
+the same dashboard (`M-x bp/agent-sessions-list`).
+
+The same mail works in two relationships. Decide which one you are in first:
+
+- **Peer messaging** — you and another agent each already work for the human,
+  and you are only exchanging information: asking what another session found,
+  telling it something changed, answering its question. Nobody dispatched
+  anybody. Read *Messaging a peer* below and skip the coordinator sections.
+- **Coordinating** — you start workers, hand each a brief, and wait for their
+  `done`. Read *Messaging a peer* for the mail mechanics, then §1–§5.
+
+If the human asks you to talk to an existing session, that is peer messaging,
+even if you are asking it to do something. Do not turn it into a worker with a
+brief, and do not expect a `done` from it.
+
+## Messaging a peer
+
+```bash
+echo "$EMACS_AGENT_SESSION_ID"            # your own address, if a peer needs it
+emacs-agent send-and-wait --to <address> --subject "<topic>" --body "<question>" \
+  --timeout 90                            # you need the reply in this turn
+emacs-agent send --to <address> --type status --subject "<fyi>" --body "..."
+emacs-agent send --to <address> --type answer --subject "<reply>" --body "..."
+```
+
+- **Addresses.** A peer's address comes from the human (a terminal id like
+  `11588-42`, a durable session id, or an `agent-session:` link) or from the
+  `Reply:` line of mail it sent you. `emacs-agent list` shows only workers you
+  spawned, and `emacs-agent worktrees` shows who is where but not their ids, so
+  neither finds a peer for you. If you have no address, ask the human for one
+  instead of guessing. Your own id rides along on everything you send, so the
+  peer can always reply.
+- **Types.** Use `question` when you need a reply, `answer` to reply to one
+  (the `Reply:` line already says so), and `status` for information the peer
+  can use whenever it next stops. `status` does not interrupt a running peer;
+  `question` and `answer` can steer it at its next safe boundary. Do not use
+  `done`, `blocked`, or `ask` — those are a worker's lifecycle reports to its
+  coordinator, and without one `done` and `ask` refuse to run unless you pass
+  `--to`.
+- **Waiting.** Use `send-and-wait` only when your current response depends on
+  the reply; otherwise `send` and yield. A peer's reply arrives as new input
+  later, and the peer may be busy with its own task for a long time.
+- **Write a self-contained message.** The peer has its own conversation and has
+  not seen yours: give paths, branch names, and exactly what you need back.
+- **The peer owns its work.** It answers to the human, not to you. Ask it, tell
+  it, or suggest; do not edit its files or git state, and do not assume it will
+  drop its task for yours. If it declines or the human redirected it, take that
+  as the answer.
+- **Answering a peer.** When `$orca (/orca)` mail arrives from a peer, reply
+  with an `answer` through its `Reply:` command once you have something useful,
+  even if the answer is "not known here". If the question needs the human's
+  decision, say so in your answer and put it on your own pending-decisions list
+  rather than deciding for them.
+
+Peer mail has the same delivery, persistence, and revival behavior described in
+§4, §5, and *Limits worth knowing*: a stopped peer conversation is revived by a
+message sent to its durable address.
+
+The remaining sections are for coordinating workers.
 
 There is no task table, no dependency graph and no scheduler. **Your context is
 the plan.** Keep the list of who is doing what in your head (or in a file you
 share with the human) — Emacs only owns what you cannot do yourself: starting a
 terminal, addressing a live one, and waiting.
 
-## The loop
+## The coordinator loop
 
 ```bash
 emacs-agent worktrees                     # who is working where

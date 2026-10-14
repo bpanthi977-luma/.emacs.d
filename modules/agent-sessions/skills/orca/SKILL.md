@@ -17,8 +17,9 @@ description: >-
 The full, version-matched guide is printed by the `emacs-agent` command itself,
 so it cannot drift from the tool it documents. Load it now, then follow it:
 
-- **Coordinating or messaging other agents** — you were asked to orchestrate,
-  the invocation included `--main`, you are about to spawn a worker, or you
+- **Messaging a peer or coordinating workers** — you were asked to message,
+  ask, or answer another existing agent session; you were asked to orchestrate;
+  the invocation included `--main`; you are about to spawn a worker; or you
   need to send or answer agent mail outside a worker lifecycle:
 
   ```bash
@@ -35,7 +36,13 @@ so it cannot drift from the tool it documents. Load it now, then follow it:
 Read whichever applies before running any other `emacs-agent` verb. If both
 apply (you are a worker that needs to spawn workers of its own), read both.
 
-While coordinating, maintain a durable list of every question or decision that
+Peer messaging is not orchestration. When you are only exchanging messages with
+an agent that already works for the human, there is no worker, no brief, and no
+`done`: use `send`, `send-and-wait`, and the `Reply:` line, and follow the
+guide's *Messaging a peer* section. The worktree, brief, model, and
+coordinator-ledger rules below apply only when you dispatch workers.
+
+While coordinating workers, maintain a durable list of every question or decision that
 still requires the human's answer. Agent mail and later status updates must not
 push those items out of view: include a numbered `Pending your decisions:`
 section in every user-facing status or handoff until each item is explicitly
