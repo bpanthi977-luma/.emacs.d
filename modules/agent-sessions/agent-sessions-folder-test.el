@@ -436,4 +436,50 @@
         (kill-buffer buf)
         (delete-directory root t)))))
 
+(ert-deftest bp/folders-fork-inherits-parent-folder ()
+  (bp/folder-test-with-db
+    (let* ((root (make-temp-file "repo-fork-" t))
+           (other-root (make-temp-file "repo-fork-other-" t))
+           (parent-buf (generate-new-buffer " *parent*"))
+           (child-buf (generate-new-buffer " *child*"))
+           (chosen-buf (generate-new-buffer " *chosen*"))
+           (bp/agent-sessions (make-hash-table :test 'equal)))
+      (unwind-protect
+          (let* ((repo (bp/agent-sessions--canonical-path root))
+                 (work (bp/agent-sessions--folder-create "Work" repo))
+                 (mine (bp/agent-sessions--folder-create "Mine" repo))
+                 (parent (list :buffer parent-buf :agent-session-id "parent"
+                               :repo-root root))
+                 (child (list :buffer child-buf :repo-root root
+                              :worktree-path root))
+                 (from-parent '("parent" . "parent label")))
+            (bp/agent-sessions--folder-set parent (plist-get work :id))
+            (with-current-buffer child-buf
+              (setq-local bp/agent-session-id "child-terminal"))
+            (puthash "child-terminal" child bp/agent-sessions)
+            ;; A fork lands in its parent's folder, persisted under its own id.
+            (bp/agent-sessions--folder-inherit child-buf from-parent repo)
+            (bp/agent-sessions--folder-hydrate child-buf "child")
+            (should (equal (plist-get work :id)
+                           (bp/agent-sessions--folder-for-session
+                            (list :agent-session-id "child" :repo-root root))))
+            ;; A folder already chosen for the terminal wins over the parent's.
+            (with-current-buffer chosen-buf
+              (setq-local bp/agent-session--folder-id (plist-get mine :id)))
+            (bp/agent-sessions--folder-inherit chosen-buf from-parent repo)
+            (should (equal (plist-get mine :id)
+                           (buffer-local-value 'bp/agent-session--folder-id
+                                               chosen-buf)))
+            ;; A parent's folder never crosses into another repo.
+            (with-current-buffer chosen-buf
+              (setq-local bp/agent-session--folder-id nil))
+            (bp/agent-sessions--folder-inherit
+             chosen-buf from-parent
+             (bp/agent-sessions--canonical-path other-root))
+            (should-not (buffer-local-value 'bp/agent-session--folder-id
+                                            chosen-buf)))
+        (mapc #'kill-buffer (list parent-buf child-buf chosen-buf))
+        (delete-directory root t)
+        (delete-directory other-root t)))))
+
 ;;; agent-sessions-folder-test.el ends here
