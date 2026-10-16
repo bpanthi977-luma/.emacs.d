@@ -566,6 +566,13 @@ to the terminal that actually owns the event."
                        :worktree-path (plist-get info :worktree-path)
                        :branched-from branched-from)
                  bp/agent-sessions)
+        ;; A fork starts in its parent's folder.  Only on the first event, the
+        ;; same moment parentage is decided, so it stays a default rather than
+        ;; a rule the user's later choice has to fight.
+        (unless existing
+          (bp/agent-sessions--folder-inherit
+           buf branched-from
+           (bp/agent-sessions--canonical-path (plist-get info :repo-root))))
         (bp/agent-sessions--folder-hydrate buf agent-session-id)
         ;; Keep the restore log in step.  `SessionEnd' is the agent telling us
         ;; it is going away while its terminal stays; every other event just
@@ -2024,6 +2031,25 @@ the id key."
          (append (list :buffer buf :agent-session-id agent-sid)
                  (list :repo-root repo))
          local))))))
+
+(defun bp/agent-sessions--folder-inherit (buf branched-from repo)
+  "Put BUF in the folder of the session BRANCHED-FROM names, within REPO.
+BRANCHED-FROM is the (PARENT-SID . LABEL) a fork records.  Only the
+terminal's own choice is set, and only when it has none, so
+`bp/agent-sessions--folder-hydrate' persists it under the child's id.  Called
+once, on a terminal's first hook, so a child the user later moves out of the
+folder is not put back."
+  (when (and (buffer-live-p buf) (car branched-from)
+             (not (buffer-local-value 'bp/agent-session--folder-id buf)))
+    (bp/agent-sessions--load-folders)
+    (let ((parent-folder (gethash (car branched-from)
+                                  bp/agent-sessions--folder-assignments)))
+      (when (and parent-folder
+                 (equal (plist-get (bp/agent-sessions--folder parent-folder)
+                                   :repo)
+                        repo))
+        (with-current-buffer buf
+          (setq-local bp/agent-session--folder-id parent-folder))))))
 
 (defun bp/agent-sessions--folder-create (name repo)
   "Create or find a folder named NAME in canonical REPO."
