@@ -250,6 +250,12 @@ repeat in different repos. SQLite schema version 3 migrates the old global
 assignments using the session log's repo root, splitting a global folder when
 its members belong to multiple repos. A legacy assignment with no logged repo
 is claimed by its repo when that session next appears.
+A fork (`b`, or an auto-detected one) starts in its parent's folder. The parent's
+folder is copied onto the child's terminal at its first hook, the same moment
+parentage is decided, and is then persisted like any other folder choice. It is
+a default, not a rule: it never overrides a folder already chosen for the
+terminal, never crosses repos, and is not re-applied later, so moving the child
+out of the folder sticks.
 
 **A stray key closes the dispatch menu instead of trapping you in it.** `RET`
 on a repo/worktree heading opens project.el's switch menu, whose own
