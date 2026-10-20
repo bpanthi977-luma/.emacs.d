@@ -1490,20 +1490,38 @@ caller goes through here rather than touching `bp/agent-sessions--db'."
                       ON CONFLICT(key) DO UPDATE SET value = excluded.value"
                   (list key (format "%s" value))))
 
+(defun bp/agent-sessions--emacs-alive-p (emacs-sid)
+  "Non-nil when the Emacs that minted terminal id EMACS-SID is still running.
+Terminal ids are \"PID-COUNTER\", so the pid is read off the front.  A live
+process with that pid counts only if it is an Emacs, which keeps a reused pid
+from shielding a dead Emacs's rows forever."
+  (let ((pid (string-to-number emacs-sid)))
+    (or (= pid (emacs-pid))
+        (let ((comm (alist-get 'comm (and (> pid 0)
+                                          (process-attributes pid)))))
+          (and comm (string-match-p "emacs" (downcase comm)))))))
+
 (defun bp/agent-sessions--db-reap (db)
   "Close session rows that a previous Emacs left open by dying.
-This is the whole crash-detection scheme, and it works because there is only
-ever one Emacs: a freshly started one has no sessions of its own yet, so any
-row still marked open must belong to an Emacs that never ran its
-`kill-emacs-hook'.  The heartbeat in `meta' dates the death; without one we
-fall back to when the session opened."
+This is the whole crash-detection scheme: a row still marked open belongs to
+an Emacs that never ran its `kill-emacs-hook' — unless that Emacs is still
+running.  Rows whose Emacs is alive are left alone, because any second Emacs
+that opens this file (a batch test run, most of all) would otherwise close a
+live Emacs's sessions as crashed.  Its terminals never reopen a closed row,
+so those sessions would drop out of the log for good: restore-previous would
+miss them, and killing them later could not be recorded.  The heartbeat in
+`meta' dates the death; without one we fall back to when the session opened."
   (let ((seen (bp/agent-sessions--meta-get db "last_seen")))
-    (sqlite-execute db
-                    "UPDATE sessions
-                        SET closed_at = COALESCE(?, opened_at),
-                            close_reason = 'crash'
-                      WHERE closed_at IS NULL"
-                    (list (and seen (string-to-number seen))))))
+    (dolist (row (sqlite-select db "SELECT DISTINCT emacs_sid FROM sessions
+                                     WHERE closed_at IS NULL"))
+      (unless (bp/agent-sessions--emacs-alive-p (car row))
+        (sqlite-execute db
+                        "UPDATE sessions
+                            SET closed_at = COALESCE(?, opened_at),
+                                close_reason = 'crash'
+                          WHERE closed_at IS NULL AND emacs_sid = ?"
+                        (list (and seen (string-to-number seen))
+                              (car row)))))))
 
 (defun bp/agent-sessions--db-heartbeat ()
   "Record that Emacs was alive just now, so a crash can be dated.
