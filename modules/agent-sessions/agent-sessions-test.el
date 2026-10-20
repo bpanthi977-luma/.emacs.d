@@ -863,6 +863,29 @@
                      (sqlite-select db "SELECT visited_at FROM shared_links
                        WHERE url = 'https://linear.app/issue/ABC-1'"))))))
 
+(ert-deftest bp/agent-sessions-reap-spares-live-emacs ()
+  (bp/agent-sessions-test--with-temp-db
+    (let ((db (bp/agent-sessions--db))
+          (live (format "%d-1" (emacs-pid)))
+          ;; Above any pid the kernel hands out, so never a running process.
+          (dead "999999999-1"))
+      (dolist (sid (list live dead))
+        (sqlite-execute db "INSERT INTO sessions (emacs_sid, worktree, opened_at)
+                            VALUES (?, '/tmp', 100)"
+                        (list sid)))
+      (bp/agent-sessions--meta-set db "last_seen" 200)
+      ;; What a second Emacs opening the file does: the live one's row must
+      ;; stay open, and only the dead one's is closed as a crash.
+      (bp/agent-sessions--db-reap db)
+      (should (equal '((nil nil))
+                     (sqlite-select db "SELECT closed_at, close_reason
+                                          FROM sessions WHERE emacs_sid = ?"
+                                    (list live))))
+      (should (equal '((200 "crash"))
+                     (sqlite-select db "SELECT closed_at, close_reason
+                                          FROM sessions WHERE emacs_sid = ?"
+                                    (list dead)))))))
+
 (ert-deftest bp/agent-sessions-mark-read-advances-within-session ()
   (with-temp-buffer
     (bp/agent-sessions-mode)
