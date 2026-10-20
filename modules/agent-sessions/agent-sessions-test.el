@@ -7,68 +7,91 @@
   (list :id (concat "test-" subject) :from "sender" :from-label "sender"
         :type type :subject subject :body "" :files "" :report "" :read nil))
 
+(defmacro bp/agent-sessions-test--with-temp-db (&rest body)
+  "Run BODY with an isolated agent-sessions database."
+  (declare (indent 0) (debug t))
+  `(let* ((db-file (make-temp-file "agent-sessions-test-"))
+          (snapshot-directory
+           (make-temp-file "agent-sessions-snapshots-test-" t))
+          (bp/agent-sessions-db-file db-file)
+          (bp/agent-sessions-file-snapshot-directory snapshot-directory)
+          (bp/agent-sessions--db nil)
+          (bp/agent-sessions--shared-files nil)
+          (bp/agent-sessions--shared-paths nil)
+          (bp/agent-sessions--shared-links nil))
+     (unwind-protect
+         (progn ,@body)
+       (when (sqlitep bp/agent-sessions--db)
+         (sqlite-close bp/agent-sessions--db))
+       (dolist (path (list db-file (concat db-file "-wal")
+                           (concat db-file "-shm")))
+         (when (file-exists-p path)
+           (delete-file path)))
+       (delete-directory snapshot-directory t))))
+
 (ert-deftest bp/agent-hook-routes-stale-daemon-id-to-unresolved-terminal ()
-  (let* ((directory (make-temp-file "agent-hook-worktree-" t))
-         (target (generate-new-buffer " *agent-hook-target*"))
-         (other (generate-new-buffer " *agent-hook-other*"))
-         (payload-file (make-temp-file "agent-hook-payload-"))
-         (bp/agent-session-id->buffer (make-hash-table :test 'equal))
-         (bp/agent-sessions (make-hash-table :test 'equal))
-         (bp/agent-session-notify-on-attention nil)
-         logged)
-    (unwind-protect
-        (progn
-          (with-current-buffer target
-            (setq-local bp/agent-session-id "actual-terminal")
-            (setq default-directory (file-name-as-directory directory)))
-          (with-current-buffer other
-            (setq-local bp/agent-session-id "other-terminal")
-            (setq default-directory (file-name-as-directory directory)))
-          (puthash "actual-terminal" target bp/agent-session-id->buffer)
-          (puthash "other-terminal" other bp/agent-session-id->buffer)
-          ;; A terminal in the same worktree already owned by another thread
-          ;; must not make routing ambiguous.
-          (puthash "other-terminal"
-                   (list :buffer other :agent-type "codex"
-                         :agent-session-id "other-thread")
-                   bp/agent-sessions)
-          (with-temp-file payload-file
-            (insert
-             (json-serialize
-              (let ((payload (make-hash-table :test 'equal)))
-                (puthash "hook_event_name" "Stop" payload)
-                (puthash "session_id" "actual-thread" payload)
-                (puthash "cwd" directory payload)
-                payload))))
-          (cl-letf (((symbol-function 'bp/agent-sessions--foreground-command)
-                     (lambda (buf)
-                       (and (eq buf target) "codex")))
-                    ((symbol-function 'bp/agent-session--repo-info)
-                     (lambda (_)
-                       (list :repo "repo" :repo-root directory
-                             :worktree "worktree"
-                             :worktree-path directory)))
-                    ((symbol-function 'bp/agent-sessions--log-update)
-                     (lambda (buf type sid)
-                       (setq logged (list buf type sid))))
-                    ((symbol-function 'bp/agent-orchestration--hydrate) #'ignore)
-                    ((symbol-function 'bp/agent-orchestration-deliver) #'ignore)
-                    ((symbol-function 'bp/agent-sessions--refresh-if-visible)
-                     #'ignore))
-            ;; The inherited daemon id no longer names any live terminal.
-            (bp/agent-hook-notify "stale-terminal" "codex" payload-file))
-          (let ((session (gethash "actual-terminal" bp/agent-sessions)))
-            (should (equal "actual-thread"
-                           (plist-get session :agent-session-id)))
-            (should (eq target (plist-get session :buffer)))
-            (should (eq 'needs-attention (plist-get session :status))))
-          (should-not (gethash "stale-terminal" bp/agent-sessions))
-          (should (equal (list target "codex" "actual-thread") logged)))
-      (when (file-exists-p payload-file)
-        (delete-file payload-file))
-      (kill-buffer target)
-      (kill-buffer other)
-      (delete-directory directory t))))
+  (bp/agent-sessions-test--with-temp-db
+   (let* ((directory (make-temp-file "agent-hook-worktree-" t))
+          (target (generate-new-buffer " *agent-hook-target*"))
+          (other (generate-new-buffer " *agent-hook-other*"))
+          (payload-file (make-temp-file "agent-hook-payload-"))
+          (bp/agent-session-id->buffer (make-hash-table :test 'equal))
+          (bp/agent-sessions (make-hash-table :test 'equal))
+          (bp/agent-session-notify-on-attention nil)
+          logged)
+     (unwind-protect
+         (progn
+           (with-current-buffer target
+             (setq-local bp/agent-session-id "actual-terminal")
+             (setq default-directory (file-name-as-directory directory)))
+           (with-current-buffer other
+             (setq-local bp/agent-session-id "other-terminal")
+             (setq default-directory (file-name-as-directory directory)))
+           (puthash "actual-terminal" target bp/agent-session-id->buffer)
+           (puthash "other-terminal" other bp/agent-session-id->buffer)
+           ;; A terminal in the same worktree already owned by another thread
+           ;; must not make routing ambiguous.
+           (puthash "other-terminal"
+                    (list :buffer other :agent-type "codex"
+                          :agent-session-id "other-thread")
+                    bp/agent-sessions)
+           (with-temp-file payload-file
+             (insert
+              (json-serialize
+               (let ((payload (make-hash-table :test 'equal)))
+                 (puthash "hook_event_name" "Stop" payload)
+                 (puthash "session_id" "actual-thread" payload)
+                 (puthash "cwd" directory payload)
+                 payload))))
+           (cl-letf (((symbol-function 'bp/agent-sessions--foreground-command)
+                      (lambda (buf)
+			(and (eq buf target) "codex")))
+                     ((symbol-function 'bp/agent-session--repo-info)
+                      (lambda (_)
+			(list :repo "repo" :repo-root directory
+                              :worktree "worktree"
+                              :worktree-path directory)))
+                     ((symbol-function 'bp/agent-sessions--log-update)
+                      (lambda (buf type sid)
+			(setq logged (list buf type sid))))
+                     ((symbol-function 'bp/agent-orchestration--hydrate) #'ignore)
+                     ((symbol-function 'bp/agent-orchestration-deliver) #'ignore)
+                     ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                      #'ignore))
+             ;; The inherited daemon id no longer names any live terminal.
+             (bp/agent-hook-notify "stale-terminal" "codex" payload-file))
+           (let ((session (gethash "actual-terminal" bp/agent-sessions)))
+             (should (equal "actual-thread"
+                            (plist-get session :agent-session-id)))
+             (should (eq target (plist-get session :buffer)))
+             (should (eq 'needs-attention (plist-get session :status))))
+           (should-not (gethash "stale-terminal" bp/agent-sessions))
+           (should (equal (list target "codex" "actual-thread") logged)))
+       (when (file-exists-p payload-file)
+         (delete-file payload-file))
+       (kill-buffer target)
+       (kill-buffer other)
+       (delete-directory directory t)))))
 
 (ert-deftest bp/agent-sessions-share-file-prefers-durable-agent-id ()
   (let* ((source (make-temp-file "agent-share-routing-"))
@@ -586,28 +609,6 @@
       (should-error (bp/agent-sessions-show-file-diff) :type 'user-error)
       (should-not shown)
       (should-not visited))))
-
-(defmacro bp/agent-sessions-test--with-temp-db (&rest body)
-  "Run BODY with an isolated agent-sessions database."
-  (declare (indent 0) (debug t))
-  `(let* ((db-file (make-temp-file "agent-sessions-test-"))
-          (snapshot-directory
-           (make-temp-file "agent-sessions-snapshots-test-" t))
-          (bp/agent-sessions-db-file db-file)
-          (bp/agent-sessions-file-snapshot-directory snapshot-directory)
-          (bp/agent-sessions--db nil)
-          (bp/agent-sessions--shared-files nil)
-          (bp/agent-sessions--shared-paths nil)
-          (bp/agent-sessions--shared-links nil))
-     (unwind-protect
-         (progn ,@body)
-       (when (sqlitep bp/agent-sessions--db)
-         (sqlite-close bp/agent-sessions--db))
-       (dolist (path (list db-file (concat db-file "-wal")
-                           (concat db-file "-shm")))
-         (when (file-exists-p path)
-           (delete-file path)))
-       (delete-directory snapshot-directory t))))
 
 (defun bp/agent-sessions-test--write-file (path contents)
   "Replace PATH with CONTENTS for a shared-file test."
