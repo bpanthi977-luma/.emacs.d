@@ -107,14 +107,18 @@ so it and `C-x k` land in the same place.
 | `crash` | nothing — found open at the next startup | Emacs died |
 
 `R` offers the first three ("you ended it"), restore-previous the last two
-("it was taken from you"). **Crash detection assumes a single Emacs**: a
-starting Emacs has no sessions yet, so any row still open must belong to a dead
-one. A second Emacs would reap the first's live rows — they would read as
-restorable while still running. Nothing corrupts, and that was the accepted
-price for dropping an instances table; if that assumption ever stops holding,
-that is the thing to revisit. Because a crash runs no code, close *times* come
-from a periodic heartbeat in `meta` — the last moment Emacs is known to have
-been alive.
+("it was taken from you"). **Crash detection asks whether the owning Emacs is
+still running.** A row left open belongs to a dead Emacs only if the pid at the
+front of its terminal id (`PID-COUNTER`) no longer names a running Emacs. The
+first version assumed a single Emacs and reaped every open row, and a second
+Emacs did open the file: a batch test run, from one test that wrote to the
+real log. Every such run closed the live Emacs's sessions as `crash`. Their
+terminals never reopen a closed row, so those sessions dropped out of the log
+for good. restore-previous later missed them, and killing one could no longer
+be recorded, so `R` offered sessions back that had been closed by hand. The
+check costs one `process-attributes` per open Emacs, still with no instances
+table. Because a crash runs no code, close *times* come from a periodic
+heartbeat in `meta` — the last moment Emacs is known to have been alive.
 
 **A reorder writes two rows, not the group.** `M-n`/`M-p` are adjacent
 transpositions, and `--merge-order` turns one into a list differing from the
