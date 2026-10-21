@@ -163,7 +163,8 @@ Toggle with `s' \(`bp/agent-sessions-toggle-sort').")
 The other view displays repo → worktree → session.  Toggle with `f'.")
 
 (defconst bp/agent-session-status-alist
-  '((claude . ((Stop . needs-attention)
+  '((claude . ((SessionStart . stopped)
+               (Stop . needs-attention)
                (StopFailure . error)
                (PermissionRequest . needs-attention)
                (TeammateIdle . needs-attention)
@@ -172,7 +173,8 @@ The other view displays repo → worktree → session.  Toggle with `f'.")
               (PermissionRequest . needs-attention)
               (UserPromptSubmit . running)
               (agent-turn-complete . needs-attention)))
-    (pi . ((Stop . needs-attention)
+    (pi . ((SessionStart . stopped)
+           (Stop . needs-attention)
            (StopFailure . error)
            (UserPromptSubmit . running))))
   "Per-agent hook/notify event name -> status.
@@ -180,7 +182,13 @@ Events not listed here (PreToolUse, PostToolUse, SubagentStart/Stop, etc.)
 leave a session's existing status unchanged rather than resetting it — hook
 invocations are independent async processes with no delivery ordering
 guarantee, so an informational event can arrive after Stop/PermissionRequest
-and must not clobber the needs-attention state those set.")
+and must not clobber the needs-attention state those set.  SessionStart maps
+to `stopped', never `running': pi and Claude fire it when the TUI opens at an
+idle prompt (and Claude on --resume), so a brand-new session would otherwise
+fall through to the `running' default in `bp/agent-hook-notify' and read as
+mid-turn while sitting at its prompt.  No entry for Codex — its SessionStart
+fires lazily on the first prompt, in the same instant as UserPromptSubmit, so
+mapping it would risk clobbering `running' under unordered delivery.")
 
 (defun bp/agent-session--status-for (agent-type event-name)
   "Return the status EVENT-NAME maps to, or nil if it shouldn't change status."
@@ -843,6 +851,34 @@ contained in the child's; the largest such match is the immediate parent."
             (cons (plist-get best :agent-session-id)
                   (bp/agent-sessions--session-short-label best))))))))
 
+(defun bp/agent-sessions--tpgid-readable-p (buf)
+  "Non-nil when BUF's terminal platform reports a foreground process group.
+Platforms whose `process-attributes' omits `tpgid' make every
+`bp/agent-sessions--foreground-command' call return nil, so there a nil means
+`unknown', not `shell in front' — and `running' must not be demoted on it."
+  (and (buffer-live-p buf)
+       (let* ((proc (get-buffer-process buf))
+              (attrs (and proc (process-live-p proc)
+                          (ignore-errors
+                            (process-attributes (process-id proc))))))
+         (and attrs (assq 'tpgid attrs)))))
+
+(defun bp/agent-sessions--reconcile-status (session buf)
+  "SESSION with `running' demoted to `stopped' when BUF's terminal is idle.
+Status only becomes `running' from a hook event, and only a later event moves
+it off — so an agent killed mid-turn (no `session_shutdown' / `SessionEnd'
+fires) freezes there forever.  Demote only when the platform can name a
+foreground group and it is empty: the shell then owns the terminal, so no turn
+can be in progress.  An idle pi still holds the foreground with its TUI, which
+is why the SessionStart mapping in `bp/agent-session-status-alist' — not this
+— covers the idle-at-prompt case.  Returns a copy; the registry stays the
+hook's record, exactly as `bp/agent-sessions--unread-status' does."
+  (if (and (eq (plist-get session :status) 'running)
+           (bp/agent-sessions--tpgid-readable-p buf)
+           (not (bp/agent-sessions--foreground-command buf)))
+      (plist-put (copy-sequence session) :status 'stopped)
+    session))
+
 (defun bp/agent-sessions--unread-status (session buf)
   "SESSION with its status forced to `needs-attention' if BUF is marked unread.
 Returns a *copy* — the registry plist must not be mutated, or the mark would
@@ -868,7 +904,9 @@ buffer killed without running local hooks)."
        (let ((buf (plist-get session :buffer)))
          (if (buffer-live-p buf)
              (push (list :id id
-                         :session (bp/agent-sessions--unread-status session buf)
+                         :session (bp/agent-sessions--unread-status
+                                   (bp/agent-sessions--reconcile-status session buf)
+                                   buf)
                          :title (or (buffer-local-value 'bp/agent-session-title-override buf)
                                     (buffer-local-value 'bp/agent-session-title buf)))
                    entries)
