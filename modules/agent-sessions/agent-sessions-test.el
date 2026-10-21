@@ -1032,5 +1032,57 @@
                      "IMPL-REVIEW" "PR-OPEN" "AUTOFIX" "REVIEW" "DONE"
                      "BLOCKED" "LEARN" nil)))))
 
+(ert-deftest bp/agent-sessions--pi-session-start-is-not-running ()
+  ;; Pi fires session_start when its TUI opens at an idle prompt, so a fresh
+  ;; session must land on `stopped', not fall through to the `running' default
+  ;; in `bp/agent-hook-notify' — that is the frozen-running-at-nothing bug.
+  (should (eq 'stopped (bp/agent-session--status-for "pi" "SessionStart")))
+  (should (eq 'stopped (bp/agent-session--status-for "claude" "SessionStart")))
+  ;; Codex fires its SessionStart lazily on the first prompt, the same instant
+  ;; as UserPromptSubmit — an unordered SessionStart must be able to clobber
+  ;; `running', so Codex gets no mapping at all.
+  (should (null (bp/agent-session--status-for "codex" "SessionStart"))))
+
+(ert-deftest bp/agent-sessions--reconcile-status-demotes-only-provably-idle ()
+  (let* ((buffer (generate-new-buffer " *pi-reconcile-test*"))
+       (session (list :status 'running :agent-type "pi" :buffer buffer)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'bp/agent-sessions--tpgid-readable-p)
+                   (lambda (_) t)))
+          ;; Nothing in the foreground: the shell owns the pty, so pi cannot be
+          ;; mid-turn — the killed-mid-turn freeze must read as stopped.
+          (cl-letf (((symbol-function 'bp/agent-sessions--foreground-command)
+                     (lambda (_) nil)))
+            (let ((reconciled (bp/agent-sessions--reconcile-status session buffer)))
+              (should (eq 'stopped (plist-get reconciled :status)))
+              ;; Display-time only: the registry plist must survive untouched,
+              ;; the way `bp/agent-sessions--unread-status' works.
+              (should (eq 'running (plist-get session :status)))))
+          ;; pi idling at its own prompt still holds the foreground with its
+          ;; TUI — no demotion; the SessionStart mapping covers that case.
+          (cl-letf (((symbol-function 'bp/agent-sessions--foreground-command)
+                     (lambda (_) "pi")))
+            (should (eq 'running
+                        (plist-get (bp/agent-sessions--reconcile-status
+                                    session buffer)
+                                   :status)))))
+      (kill-buffer buffer))))
+
+(ert-deftest bp/agent-sessions--reconcile-status-needs-tpgid-to-demote ()
+  ;; On a platform whose process-attributes omits tpgid, a nil foreground says
+  ;; "unknown", not "shell in front" — running must survive untouched.
+  (let* ((buffer (generate-new-buffer " *pi-reconcile-tpgid-test*"))
+       (session (list :status 'running :agent-type "pi" :buffer buffer)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'bp/agent-sessions--tpgid-readable-p)
+                   (lambda (_) nil))
+                  ((symbol-function 'bp/agent-sessions--foreground-command)
+                   (lambda (_) nil)))
+          (should (eq 'running
+                      (plist-get (bp/agent-sessions--reconcile-status
+                                  session buffer)
+                                 :status))))
+      (kill-buffer buffer))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
