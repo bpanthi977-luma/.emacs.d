@@ -137,6 +137,23 @@ promotes known events and leaves everything else untouched — status must never
 be clobbered back to "running" by a straggler. This is the single most
 important invariant when editing the status logic.
 
+**`running` means mid-turn, and two guards keep it that way.**
+`SessionStart` maps to `stopped` for pi and Claude — both fire it when the TUI
+opens at an idle prompt (Claude also on `--resume`), so without the mapping a
+fresh session fell through to the `running` default in `bp/agent-hook-notify`
+and read as mid-turn while sitting at its prompt. Codex deliberately gets no
+mapping: its `SessionStart` fires lazily on the first prompt, in the same
+instant as `UserPromptSubmit`, so mapping it could clobber `running` under
+unordered delivery. The other hole is an agent killed mid-turn — no shutdown
+hook fires, so the status freezes at `running` forever.
+`bp/agent-sessions--reconcile-status` demotes that to `stopped` at display
+time when the terminal can name a foreground group (`tpgid` present in
+`process-attributes`) and the group is empty — the shell then owns the pty, so
+no turn can be in progress. An idle pi still holds the foreground with its
+TUI, which is why the SessionStart mapping exists at all. Demotion is
+display-time only, on a copy, exactly like the unread mark — the registry
+stays the hook's record.
+
 **Notifications fire on the transition into attention, once.** A session that
 sits waiting must not re-announce on every subsequent event. If you add states,
 preserve "edge-triggered, not level-triggered."
