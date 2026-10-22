@@ -886,6 +886,63 @@
                                           FROM sessions WHERE emacs_sid = ?"
                                     (list dead)))))))
 
+(ert-deftest bp/agent-sessions-exit-recloses-rows-wrongly-reaped ()
+  (bp/agent-sessions-test--with-temp-db
+    (let* ((db (bp/agent-sessions--db))
+           (term (generate-new-buffer " *agent-log-term*"))
+           (bp/agent-session-id->buffer (make-hash-table :test 'equal))
+           held other)
+      (unwind-protect
+          (progn
+            ;; Both rows closed as a crash by another Emacs; only the first
+            ;; is still the current row of a terminal running here.
+            (dolist (_ '(1 2))
+              (sqlite-execute db "INSERT INTO sessions
+                                    (emacs_sid, worktree, opened_at,
+                                     closed_at, close_reason)
+                                  VALUES ('1-1', '/tmp', 100, 150, 'crash')"))
+            (setq held 1 other 2)
+            (with-current-buffer term
+              (setq-local bp/agent-session--log-row held))
+            (puthash "1-1" term bp/agent-session-id->buffer)
+            (bp/agent-sessions--log-close-all)
+            (should (equal "emacs-exit"
+                           (caar (sqlite-select db "SELECT close_reason
+                                                     FROM sessions WHERE id = ?"
+                                                (list held)))))
+            (should (equal '((150 "crash"))
+                           (sqlite-select db "SELECT closed_at, close_reason
+                                               FROM sessions WHERE id = ?"
+                                          (list other)))))
+        (kill-buffer term)))))
+
+(ert-deftest bp/agent-session-start-logs-resumed-identity ()
+  (bp/agent-sessions-test--with-temp-db
+    (let ((bp/agent-session-id->buffer (make-hash-table :test 'equal))
+          term)
+      (unwind-protect
+          (cl-letf (((symbol-function 'bp/agent-session--repo-info)
+                     (lambda (_) (list :worktree "wt" :worktree-path "/tmp")))
+                    ((symbol-function 'bp/agent-session--spawn)
+                     (lambda (&rest _)
+                       (setq term (generate-new-buffer " *agent-log-resume*"))
+                       (with-current-buffer term
+                         (setq-local bp/agent-session-id "1-1"))
+                       (bp/agent-sessions--log-open term)
+                       term)))
+            ;; No hook fires: an idle resumed Codex must still be restorable.
+            (bp/agent-session-start "/tmp" 'codex "thread-1")
+            (should (equal '(("codex" "thread-1"))
+                           (sqlite-select (bp/agent-sessions--db)
+                                          "SELECT agent_type, agent_sid
+                                             FROM sessions")))
+            (should (equal "thread-1"
+                           (plist-get (car (bp/agent-sessions--log-rows
+                                            "closed_at IS NULL"))
+                                      :agent-sid))))
+        (when (buffer-live-p term)
+          (kill-buffer term))))))
+
 (ert-deftest bp/agent-sessions-mark-read-advances-within-session ()
   (with-temp-buffer
     (bp/agent-sessions-mode)
