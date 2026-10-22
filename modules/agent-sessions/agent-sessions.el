@@ -434,7 +434,8 @@ the body names the agent type, state, and its terminal title (task summary)."
 (defun bp/agent-sessions--hook-buffer (transport-id agent-type payload)
   "Resolve a hook PAYLOAD to its terminal buffer.
 TRANSPORT-ID is the `EMACS_AGENT_SESSION_ID' inherited by the hook process.
-Normally it names the terminal directly.  A shared agent daemon can retain an
+Normally it names the terminal directly, and for any agent but Codex that is
+taken as authoritative.  A shared agent daemon can retain an
 older terminal's environment, however, so prefer an already-known agent
 session id and reject a direct buffer that belongs to a different session.
 As a final fallback, return the unique unresolved AGENT-TYPE terminal whose
@@ -459,6 +460,12 @@ directory matches PAYLOAD's `cwd'; return nil rather than guess if ambiguous."
                   bp/agent-sessions)
                  nil))))
     (or known
+        (and (buffer-live-p direct)
+             ;; Only Codex's shared daemon can carry another terminal's id.
+             ;; Every other agent's hook is a child of the agent in DIRECT,
+             ;; whose new id after `/clear' must not get its events dropped.
+             (not (equal agent-type "codex"))
+             direct)
         (and (buffer-live-p direct)
              (let ((existing (gethash transport-id bp/agent-sessions)))
                (and (or (null agent-sid)
