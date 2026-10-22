@@ -4585,7 +4585,11 @@ INITIAL-PROMPT is non-nil, submit it as the resumed session's first prompt."
               bp/agent-session-resume-commands nil initial-prompt)))
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        (setq-local bp/agent-session--resuming-session-id session-id)))
+        (setq-local bp/agent-session--resuming-session-id session-id))
+      ;; Log the identity now rather than at the first hook: Codex fires none
+      ;; until its first prompt, so a resumed session left idle would
+      ;; otherwise stay an anonymous row that no restore can offer back.
+      (bp/agent-sessions--log-update buf (format "%s" agent-type) session-id))
     buf))
 
 (defun bp/agent-sessions--buffer-for-agent-session (session-id)
