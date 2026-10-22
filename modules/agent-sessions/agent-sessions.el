@@ -4701,6 +4701,18 @@ override preserves that label when the resumed agent emits fresh OSC titles."
       (bp/agent-sessions--refresh-if-visible)))
   buf)
 
+(defun bp/agent-sessions--log-resumable-p (row)
+  "Non-nil unless session-log ROW is a Claude session with nothing to resume.
+Claude reports its session id at `SessionStart', as soon as its TUI opens, but
+writes the transcript `--resume' reads only once a message is sent.  A session
+opened and never prompted is logged all the same, and resuming it fails with
+\"No conversation found\"."
+  (or (not (equal (plist-get row :agent-type) "claude"))
+      (file-expand-wildcards
+       (expand-file-name (format "projects/*/%s.jsonl"
+                                 (plist-get row :agent-sid))
+                         (or (getenv "CLAUDE_CONFIG_DIR") "~/.claude")))))
+
 (defun bp/agent-sessions--restore-row (row)
   "Resume the session described by ROW, or jump to it if it is already open."
   (let* ((wt (plist-get row :worktree))
@@ -4714,6 +4726,8 @@ override preserves that label when the resumed agent emits fresh OSC titles."
       (message "That session is already open."))
      ((not (file-directory-p wt))
       (message "Worktree is gone: %s" wt))
+     ((not (bp/agent-sessions--log-resumable-p row))
+      (message "Never prompted, nothing to resume: %s" sid))
      (t
       (bp/agent-sessions--restore-title
        (bp/agent-session-start wt type sid) row)))))
@@ -4763,12 +4777,14 @@ is spawned."
          (gone (seq-filter (lambda (r)
                              (not (file-directory-p (plist-get r :worktree))))
                            rows))
-         (todo (seq-difference rows (append live gone))))
+         (empty (seq-remove #'bp/agent-sessions--log-resumable-p
+                            (seq-difference rows (append live gone))))
+         (todo (seq-difference rows (append live gone empty))))
     (cond
      ((null rows) (message "No sessions were lost — nothing to restore."))
      ((null todo)
-      (message "Nothing to restore: %d already open, %d worktree(s) gone."
-               (length live) (length gone)))
+      (message "Nothing to restore: %d already open, %d worktree(s) gone, %d never prompted."
+               (length live) (length gone) (length empty)))
      (t
       (with-output-to-temp-buffer "*Agent Sessions Restore*"
         (princ (format "Sessions from the last Emacs (%s):\n\n"
@@ -4779,7 +4795,10 @@ is spawned."
           (princ (format "\nAlready open, will be skipped: %d\n" (length live))))
         (dolist (r gone)
           (princ (format "\nWorktree gone, cannot restore: %s\n"
-                         (plist-get r :worktree)))))
+                         (plist-get r :worktree))))
+        (when empty
+          (princ (format "\nNever prompted, nothing to resume: %d\n"
+                         (length empty)))))
       (when (yes-or-no-p (format "Restore %d session(s)? " (length todo)))
         ;; Staggered: each spawns a terminal and types into it, and firing them
         ;; all in one go leaves the shells racing their own startup.
