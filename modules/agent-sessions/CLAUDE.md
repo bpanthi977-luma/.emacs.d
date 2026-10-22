@@ -149,6 +149,19 @@ promotes known events and leaves everything else untouched — status must never
 be clobbered back to "running" by a straggler. This is the single most
 important invariant when editing the status logic.
 
+**A terminal's agent id can change under it, and only Codex's hooks may be
+misaddressed.** Claude's `/clear` ends one conversation and starts another, with
+a new id, in the same terminal. Routing that rejected a terminal whose registered
+id differed from the payload's (written for Codex's shared daemon, which can
+carry another terminal's `EMACS_AGENT_SESSION_ID`) dropped every later hook from
+such a terminal. The new conversation never reached the log, and restore lost
+it. A Claude or pi hook is a child of the agent in its terminal, so its terminal
+id is trusted, and the identity check applies to Codex alone. The straggler rule
+above covers the other half of `/clear`: the old conversation's `SessionEnd` can
+arrive after the new one's `SessionStart`, and is dropped when its id is no
+longer the terminal's. Applied, it would close the new conversation's row and
+mark the new id as ended.
+
 **`running` means mid-turn, and two guards keep it that way.**
 `SessionStart` maps to `stopped` for pi and Claude — both fire it when the TUI
 opens at an idle prompt (Claude also on `--resume`), so without the mapping a
