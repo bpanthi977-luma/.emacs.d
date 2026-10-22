@@ -93,6 +93,53 @@
        (kill-buffer other)
        (delete-directory directory t)))))
 
+(ert-deftest bp/agent-hook-follows-claude-clear-to-new-conversation ()
+  (bp/agent-sessions-test--with-temp-db
+   (let* ((directory (make-temp-file "agent-hook-clear-" t))
+          (term (generate-new-buffer " *agent-hook-clear*"))
+          (bp/agent-session-id->buffer (make-hash-table :test 'equal))
+          (bp/agent-sessions (make-hash-table :test 'equal))
+          (bp/agent-session-notify-on-attention nil))
+     (cl-flet ((deliver (event sid)
+                 (let ((file (make-temp-file "agent-hook-payload-")))
+                   (with-temp-file file
+                     (insert (json-serialize
+                              (let ((p (make-hash-table :test 'equal)))
+                                (puthash "hook_event_name" event p)
+                                (puthash "session_id" sid p)
+                                (puthash "cwd" directory p)
+                                p))))
+                   (bp/agent-hook-notify "1-1" "claude" file)))
+               (rows ()
+                 (sqlite-select (bp/agent-sessions--db)
+                                "SELECT agent_sid, close_reason FROM sessions
+                                  ORDER BY id")))
+       (unwind-protect
+           (cl-letf (((symbol-function 'bp/agent-session--repo-info)
+                      (lambda (_) (list :repo "repo" :repo-root directory
+                                        :worktree "wt"
+                                        :worktree-path directory)))
+                     ((symbol-function 'bp/agent-sessions--detect-parent)
+                      #'ignore)
+                     ((symbol-function 'bp/agent-orchestration--hydrate) #'ignore)
+                     ((symbol-function 'bp/agent-orchestration-deliver) #'ignore)
+                     ((symbol-function 'bp/agent-sessions--refresh-if-visible)
+                      #'ignore))
+             (with-current-buffer term
+               (setq-local bp/agent-session-id "1-1")
+               (setq default-directory (file-name-as-directory directory)))
+             (puthash "1-1" term bp/agent-session-id->buffer)
+             (bp/agent-sessions--log-open term)
+             (deliver "SessionStart" "old")
+             ;; `/clear', with the old conversation's end delivered last.
+             (deliver "SessionStart" "new")
+             (deliver "SessionEnd" "old")
+             (should (equal "new" (plist-get (gethash "1-1" bp/agent-sessions)
+                                             :agent-session-id)))
+             (should (equal '(("old" "superseded") ("new" nil)) (rows))))
+         (kill-buffer term)
+         (delete-directory directory t))))))
+
 (ert-deftest bp/agent-sessions-share-file-prefers-durable-agent-id ()
   (let* ((source (make-temp-file "agent-share-routing-"))
          (target-buffer (generate-new-buffer " *agent-share-target*"))
