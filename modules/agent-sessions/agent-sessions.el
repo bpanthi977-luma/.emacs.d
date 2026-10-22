@@ -548,8 +548,17 @@ to the terminal that actually owns the event."
           (or (and (equal event-name "UserPromptSubmit")
                    payload
                    (gethash "user_prompt" payload))
-              (and existing (plist-get existing :submitted-prompt)))))
-    (when (buffer-live-p buf)
+              (and existing (plist-get existing :submitted-prompt))))
+         ;; `/clear' ends one conversation and starts another in the same
+         ;; terminal, and delivery is unordered, so the old one's `SessionEnd'
+         ;; can land after the new one has taken over.  Applied, it would
+         ;; close the new conversation's log row and put the old id back.
+         (stale-end (and (equal event-name "SessionEnd")
+                         payload existing
+                         (let ((sid (gethash "session_id" payload))
+                               (current (plist-get existing :agent-session-id)))
+                           (and sid current (not (equal sid current)))))))
+    (when (and (buffer-live-p buf) (not stale-end))
       (let* ((info (bp/agent-session--repo-info (buffer-local-value 'default-directory buf)))
              ;; Parentage, in priority order: what a previous event already
              ;; recorded; the marker a fresh `b'-branch left on the buffer; or,
