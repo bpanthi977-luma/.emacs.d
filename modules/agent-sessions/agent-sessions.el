@@ -1563,11 +1563,36 @@ miss them, and killing them later could not be recorded.  The heartbeat in
 
 (defun bp/agent-sessions--db-heartbeat ()
   "Record that Emacs was alive just now, so a crash can be dated.
-Deliberately a no-op until the database has been opened for some other
+Also reasserts that its running sessions are, see
+`bp/agent-sessions--log-reopen-live'.  Deliberately a no-op until the database has been opened for some other
 reason — an Emacs with no agent sessions has nothing to date."
   (when (sqlitep bp/agent-sessions--db)
     (bp/agent-sessions--meta-set bp/agent-sessions--db
-                                 "last_seen" (bp/agent-sessions--now))))
+                                 "last_seen" (bp/agent-sessions--now))
+    (bp/agent-sessions--log-reopen-live bp/agent-sessions--db)))
+
+(defun bp/agent-sessions--log-reopen-live (db)
+  "Reopen any log row in DB that a terminal still running here points at.
+A terminal's current row is meant to be open for as long as the terminal is:
+every path that ends a session here also forgets the row.  So a closed row
+that a live terminal still holds was closed by someone else — a second Emacs
+reaping it as a crash, as the pre-`--emacs-alive-p' reap did — and left
+alone it would miss this Emacs's `emacs-exit' batch and drop out of
+restore-previous for good.  Run with the heartbeat, which `kill-emacs-hook'
+also stamps, so the rows are healed before that batch is written."
+  (let (rows)
+    (maphash (lambda (_id buf)
+               (when-let ((row (and (buffer-live-p buf)
+                                    (buffer-local-value
+                                     'bp/agent-session--log-row buf))))
+                 (push row rows)))
+             bp/agent-session-id->buffer)
+    (when rows
+      (sqlite-execute
+       db (format "UPDATE sessions SET closed_at = NULL, close_reason = NULL
+                    WHERE closed_at IS NOT NULL AND id IN (%s)"
+                  (mapconcat (lambda (_) "?") rows ", "))
+       rows))))
 
 ;;; Session log -------------------------------------------------------------
 ;;
