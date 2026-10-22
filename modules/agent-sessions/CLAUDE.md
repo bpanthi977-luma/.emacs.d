@@ -130,7 +130,10 @@ rows, and because `kill-emacs-hook` stamps the heartbeat too, they are healed
 before the `emacs-exit` batch is written. For the same reason,
 `bp/agent-session-start` logs the type and id it resumed instead of waiting for
 the first hook. Codex fires no hook until its first prompt, and an idle resumed
-Codex left an anonymous row that no restore could offer.
+Codex left an anonymous row that no restore could offer. Claude is the opposite
+case: it logs an id at `SessionStart` that has no transcript until the first
+message. Restore therefore checks for the transcript, and skips a session that
+was never prompted instead of opening a terminal that fails.
 
 **A reorder writes two rows, not the group.** `M-n`/`M-p` are adjacent
 transpositions, and `--merge-order` turns one into a list differing from the
