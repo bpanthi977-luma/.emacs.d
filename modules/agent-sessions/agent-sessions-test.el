@@ -990,6 +990,25 @@
         (when (buffer-live-p term)
           (kill-buffer term))))))
 
+(ert-deftest bp/agent-sessions-never-prompted-claude-is-not-resumable ()
+  (let* ((config (make-temp-file "agent-claude-config-" t))
+         (process-environment (cons (concat "CLAUDE_CONFIG_DIR=" config)
+                                    process-environment)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "projects/-wt" config) t)
+          (write-region "" nil (expand-file-name "projects/-wt/used.jsonl"
+                                                 config))
+          (should (bp/agent-sessions--log-resumable-p
+                   (list :agent-type "claude" :agent-sid "used")))
+          ;; Logged at `SessionStart', but no message was ever sent.
+          (should-not (bp/agent-sessions--log-resumable-p
+                       (list :agent-type "claude" :agent-sid "unused")))
+          ;; Only Claude defers its transcript; others are taken at their word.
+          (should (bp/agent-sessions--log-resumable-p
+                   (list :agent-type "codex" :agent-sid "unused"))))
+      (delete-directory config t))))
+
 (ert-deftest bp/agent-sessions-mark-read-advances-within-session ()
   (with-temp-buffer
     (bp/agent-sessions-mode)
