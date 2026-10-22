@@ -120,6 +120,18 @@ check costs one `process-attributes` per open Emacs, still with no instances
 table. Because a crash runs no code, close *times* come from a periodic
 heartbeat in `meta` — the last moment Emacs is known to have been alive.
 
+**A live terminal's row is open, whoever closed it.** The fix above prevents
+new wrong closes. It cannot repair a row that is already closed, and one
+Emacs's terminals kept closed rows for two days because of that: at exit,
+restore-previous offered 8 of 15 sessions. Every path that ends a session here
+also forgets the terminal's row, so a closed row that a live terminal still
+holds can only be someone else's mistake. The heartbeat therefore reopens such
+rows, and because `kill-emacs-hook` stamps the heartbeat too, they are healed
+before the `emacs-exit` batch is written. For the same reason,
+`bp/agent-session-start` logs the type and id it resumed instead of waiting for
+the first hook. Codex fires no hook until its first prompt, and an idle resumed
+Codex left an anonymous row that no restore could offer.
+
 **A reorder writes two rows, not the group.** `M-n`/`M-p` are adjacent
 transpositions, and `--merge-order` turns one into a list differing from the
 saved one in exactly two slots, so `--order-write-group` diffs old against new
