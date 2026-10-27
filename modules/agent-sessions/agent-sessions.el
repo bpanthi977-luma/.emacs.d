@@ -4815,9 +4815,9 @@ is spawned."
             (setq n (1+ n))))
         (message "Restoring %d session(s)…" (length todo)))))))
 
-(defun bp/agent-sessions--store-link-for (session)
-  "Store an `elisp:' resume link for SESSION via `org-link-store-props'.
-Return non-nil on success, nil when SESSION lacks the info to build a link."
+(defun bp/agent-sessions--session-org-link (session)
+  "Return (LINK . DESCRIPTION) for an `agent-session:' resume link to SESSION.
+Return nil when SESSION lacks the info to build a link."
   (when session
     (let* ((path (or (plist-get session :worktree-path)
                      (let ((buf (plist-get session :buffer)))
@@ -4831,38 +4831,53 @@ Return non-nil on success, nil when SESSION lacks the info to build a link."
                             (magit-get-current-branch)))))
            (title (bp/agent-sessions--session-title session)))
       (when (and path sid)
-        (org-link-store-props
-         :type "agent-session"
-         :link (format "agent-session:%s::%s::%s"
-                       agent sid (file-name-as-directory path))
-         :description (if branch
-                          (format "%s %s %s" branch agent (or title sid))
-                        (format "%s %s" agent (or title sid))))
-        t))))
+        (cons (format "agent-session:%s::%s::%s"
+                      agent sid (file-name-as-directory path))
+              (if branch
+                  (format "%s %s %s" branch agent (or title sid))
+                (format "%s %s" agent (or title sid))))))))
+
+(defun bp/agent-sessions--file-org-link (path)
+  "Return (LINK . DESCRIPTION) for an Org `file:' link to PATH, or nil.
+A shared-file row is a pointer to a file, so the useful link is the ordinary
+one any other buffer would produce — not something that goes through this
+package.  The description is the file name alone, extension included: the row
+already sits under the session that shared it, and the path it came from is
+rarely what the surrounding prose wants to read."
+  (when (and path (not (string-empty-p path)))
+    (cons (concat "file:" (abbreviate-file-name path))
+          (file-name-nondirectory (directory-file-name path)))))
+
+(defun bp/agent-sessions--external-org-link (link)
+  "Return (LINK . DESCRIPTION) for shared external LINK, or nil."
+  (let ((url (plist-get link :url)))
+    (when (and url (not (string-empty-p url)))
+      (cons url (or (plist-get link :label) url)))))
+
+(defun bp/agent-sessions--store-org-link (type link)
+  "Store LINK, a (LINK . DESCRIPTION) pair, as an Org link of TYPE.
+Return non-nil when LINK was stored."
+  (when link
+    (org-link-store-props :type type :link (car link) :description (cdr link))
+    t))
+
+(defun bp/agent-sessions--store-link-for (session)
+  "Store an `agent-session:' resume link for SESSION via `org-link-store-props'.
+Return non-nil on success, nil when SESSION lacks the info to build a link."
+  (bp/agent-sessions--store-org-link
+   "agent-session" (bp/agent-sessions--session-org-link session)))
 
 (defun bp/agent-sessions--store-file-link (path)
-  "Store an Org `file:' link to PATH, described by its bare file name.
-Return non-nil on success.  A shared-file row is a pointer to a file, so the
-useful link is the ordinary one any other buffer would produce — not something
-that goes through this package.  The description is the file name alone,
-extension included: the row already sits under the session that shared it, and
-the path it came from is rarely what the surrounding prose wants to read."
-  (when (and path (not (string-empty-p path)))
-    (org-link-store-props
-     :type "file"
-     :link (concat "file:" (abbreviate-file-name path))
-     :description (file-name-nondirectory (directory-file-name path)))
-    t))
+  "Store an Org `file:' link to PATH.  Return non-nil on success."
+  (bp/agent-sessions--store-org-link
+   "file" (bp/agent-sessions--file-org-link path)))
 
 (defun bp/agent-sessions--store-external-link (link)
   "Store shared external LINK as an ordinary HTTP(S) Org link."
   (let ((url (plist-get link :url)))
-    (when (and url (not (string-empty-p url)))
-      (org-link-store-props
-       :type (if (string-prefix-p "https://" url) "https" "http")
-       :link url
-       :description (or (plist-get link :label) url))
-      t)))
+    (bp/agent-sessions--store-org-link
+     (if (and url (string-prefix-p "https://" url)) "https" "http")
+     (bp/agent-sessions--external-org-link link))))
 
 (defun bp/agent-sessions--parse-session-link (link)
   "Return (AGENT SESSION-ID WORKTREE) parsed from LINK, or nil.
