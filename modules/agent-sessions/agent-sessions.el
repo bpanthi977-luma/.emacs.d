@@ -4921,6 +4921,104 @@ terminal buffer with a live session) stores an `agent-session:' resume link."
            (bp/agent-session-id
             (gethash bp/agent-session-id bp/agent-sessions)))))))
 
+(defun bp/agent-sessions--org-entry (heading note-keys indent)
+  "Return an Org list item for HEADING with its note, indented by INDENT.
+HEADING is a (LINK . DESCRIPTION) pair, or a plain string for a heading with
+nothing to link to.  The note found under NOTE-KEYS becomes the item's body."
+  (concat indent "- "
+          (if (consp heading)
+              (org-link-make-string (car heading) (cdr heading))
+            heading)
+          "\n"
+          (when-let ((found (bp/agent-sessions--note-find note-keys)))
+            (mapconcat (lambda (line) (concat indent "  " line "\n"))
+                       (split-string (cdr found) "\n")
+                       ""))))
+
+(defun bp/agent-sessions--org-tree (section indent)
+  "Return dashboard SECTION and everything under it as an Org list.
+INDENT is the indentation of SECTION's own item.  A session contributes its
+links and files from the data they render from, so a folded row still copies
+whole; repo, worktree and folder headings recurse through their child sections."
+  (let ((value (oref section value))
+        (child-indent (concat indent "  ")))
+    (pcase (oref section type)
+      ('bp/agent-session-row
+       (when-let ((session (bp/agent-sessions--session-for-id value)))
+         (concat
+          (bp/agent-sessions--org-entry
+           (or (bp/agent-sessions--session-org-link session)
+               (bp/agent-sessions--session-short-label session))
+           (bp/agent-sessions--session-note-keys session)
+           indent)
+          (mapconcat (lambda (link)
+                       (bp/agent-sessions--org-entry
+                        (bp/agent-sessions--external-org-link link)
+                        (list (bp/agent-sessions--link-note-key
+                               (plist-get link :url)))
+                        child-indent))
+                     (bp/agent-sessions--session-links session)
+                     "")
+          (mapconcat (lambda (file)
+                       (let ((path (plist-get file :path)))
+                         (bp/agent-sessions--org-entry
+                          (bp/agent-sessions--file-org-link path)
+                          (list (bp/agent-sessions--file-note-key path))
+                          child-indent)))
+                     (bp/agent-sessions--session-files session)
+                     ""))))
+      ('bp/agent-session-link
+       (when-let* ((row (oref section parent))
+                   (session (bp/agent-sessions--session-for-id
+                             (oref row value)))
+                   (link (seq-find (lambda (link)
+                                     (equal (plist-get link :url) value))
+                                   (bp/agent-sessions--session-links session))))
+         (bp/agent-sessions--org-entry
+          (bp/agent-sessions--external-org-link link)
+          (list (bp/agent-sessions--link-note-key value))
+          indent)))
+      ('bp/agent-session-file
+       (bp/agent-sessions--org-entry
+        (bp/agent-sessions--file-org-link value)
+        (list (bp/agent-sessions--file-note-key value))
+        indent))
+      ((and type (or 'bp/agent-session-repo 'bp/agent-session-worktree
+                     'bp/agent-session-folder))
+       (concat
+        (bp/agent-sessions--org-entry
+         (pcase type
+           ('bp/agent-session-repo (plist-get value :name))
+           ('bp/agent-session-worktree (plist-get value :label))
+           (_ (or (plist-get (bp/agent-sessions--folder value) :name)
+                  "No folder")))
+         (pcase type
+           ('bp/agent-session-repo
+            (list (bp/agent-sessions--repo-note-key value)))
+           ('bp/agent-session-worktree
+            (list (bp/agent-sessions--worktree-note-key value))))
+         indent)
+        (mapconcat (lambda (child)
+                     (unless (eq (oref child type) 'bp/agent-session-note)
+                       (bp/agent-sessions--org-tree child child-indent)))
+                   (oref section children)
+                   ""))))))
+
+(defun bp/agent-sessions-copy-tree ()
+  "Copy the dashboard subtree at point to the kill ring as an Org list.
+Sessions become `agent-session:' links, shared links and files their ordinary
+Org links, and every note the indented body of the item it belongs to."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (when (and section (eq (oref section type) 'bp/agent-session-note))
+      (setq section (oref section parent)))
+    (let ((tree (and section (bp/agent-sessions--org-tree section ""))))
+      (if (or (null tree) (string-empty-p tree))
+          (message "Nothing to copy at point.")
+        (kill-new tree)
+        (message "Copied %d Org list lines"
+                 (length (split-string tree "\n" t)))))))
+
 (defun bp/agent-sessions--sync-default-directory ()
   "Track the worktree/repo at point in `default-directory'.
 This makes `C-x p' project commands (and anything else keyed off
@@ -6250,6 +6348,7 @@ out one that is already taken — or hide one that just became available."
 (define-key bp/agent-sessions-mode-map (kbd "v") #'bp/agent-sessions-display)
 (define-key bp/agent-sessions-mode-map (kbd "V") #'bp/agent-sessions-display-or-browse)
 (define-key bp/agent-sessions-mode-map (kbd "w") #'bp/agent-sessions-copy-attachment)
+(define-key bp/agent-sessions-mode-map (kbd "W") #'bp/agent-sessions-copy-tree)
 (define-key bp/agent-sessions-mode-map (kbd "k") #'bp/agent-sessions-kill)
 (define-key bp/agent-sessions-mode-map (kbd "b") #'bp/agent-sessions-branch)
 (define-key bp/agent-sessions-mode-map (kbd "B") #'bp/agent-sessions-mark-parent)
