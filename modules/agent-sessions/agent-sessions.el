@@ -4935,16 +4935,42 @@ nothing to link to.  The note found under NOTE-KEYS becomes the item's body."
                        (split-string (cdr found) "\n")
                        ""))))
 
-(defun bp/agent-sessions--org-tree (section indent)
+(defun bp/agent-sessions--row-sections (sections)
+  "Return the session-row sections among SECTIONS."
+  (seq-filter (lambda (section)
+                (eq (oref section type) 'bp/agent-session-row))
+              sections))
+
+(defun bp/agent-sessions--row-parent (row rows)
+  "Return the section among ROWS that session ROW is nested under, or nil.
+A fork is rendered as a sibling row indented under its parent rather than
+inside it, so this recovers the nesting the way
+`bp/agent-sessions--insert-entries' decides it: the parent is another row
+carrying the session id ROW was branched from."
+  (when-let* ((session (bp/agent-sessions--session-for-id (oref row value)))
+              (psid (car (plist-get session :branched-from))))
+    (seq-find (lambda (other)
+                (and (not (eq other row))
+                     (equal psid (plist-get (bp/agent-sessions--session-for-id
+                                             (oref other value))
+                                            :agent-session-id))))
+              rows)))
+
+(defun bp/agent-sessions--org-tree (section indent &optional visited)
   "Return dashboard SECTION and everything under it as an Org list.
 INDENT is the indentation of SECTION's own item.  A session contributes its
 links and files from the data they render from, so a folded row still copies
-whole; repo, worktree and folder headings recurse through their child sections."
+whole, followed by the forks nested under it; repo, worktree and folder
+headings recurse through their child sections.  VISITED holds the rows
+already emitted, so a fork cycle cannot recurse forever or copy a row twice."
   (let ((value (oref section value))
-        (child-indent (concat indent "  ")))
+        (child-indent (concat indent "  "))
+        (visited (or visited (make-hash-table :test 'eq))))
     (pcase (oref section type)
       ('bp/agent-session-row
-       (when-let ((session (bp/agent-sessions--session-for-id value)))
+       (when-let ((session (and (not (gethash section visited))
+                                (bp/agent-sessions--session-for-id value))))
+         (puthash section t visited)
          (concat
           (bp/agent-sessions--org-entry
            (or (bp/agent-sessions--session-org-link session)
@@ -4966,7 +4992,17 @@ whole; repo, worktree and folder headings recurse through their child sections."
                           (list (bp/agent-sessions--file-note-key path))
                           child-indent)))
                      (bp/agent-sessions--session-files session)
-                     ""))))
+                     "")
+          (let ((rows (when-let ((parent (oref section parent)))
+                        (bp/agent-sessions--row-sections
+                         (oref parent children)))))
+            (mapconcat (lambda (row)
+                         (when (eq (bp/agent-sessions--row-parent row rows)
+                                   section)
+                           (bp/agent-sessions--org-tree
+                            row child-indent visited)))
+                       rows
+                       "")))))
       ('bp/agent-session-link
        (when-let* ((row (oref section parent))
                    (session (bp/agent-sessions--session-for-id
@@ -4998,16 +5034,32 @@ whole; repo, worktree and folder headings recurse through their child sections."
            ('bp/agent-session-worktree
             (list (bp/agent-sessions--worktree-note-key value))))
          indent)
-        (mapconcat (lambda (child)
-                     (unless (eq (oref child type) 'bp/agent-session-note)
-                       (bp/agent-sessions--org-tree child child-indent)))
-                   (oref section children)
-                   ""))))))
+        (let* ((children (seq-remove
+                          (lambda (child)
+                            (eq (oref child type) 'bp/agent-session-note))
+                          (oref section children)))
+               (rows (bp/agent-sessions--row-sections children)))
+          (concat
+           ;; Forks are emitted under their parent, not where they sit here.
+           (mapconcat (lambda (child)
+                        (unless (and (memq child rows)
+                                     (bp/agent-sessions--row-parent child rows))
+                          (bp/agent-sessions--org-tree
+                           child child-indent visited)))
+                      children
+                      "")
+           ;; Safety net, as in `bp/agent-sessions--insert-entries': a fork
+           ;; cycle has no root to be reached from.
+           (mapconcat (lambda (row)
+                        (bp/agent-sessions--org-tree row child-indent visited))
+                      rows
+                      ""))))))))
 
 (defun bp/agent-sessions-copy-tree ()
   "Copy the dashboard subtree at point to the kill ring as an Org list.
-Sessions become `agent-session:' links, shared links and files their ordinary
-Org links, and every note the indented body of the item it belongs to."
+Sessions become `agent-session:' links with their forks nested under them,
+shared links and files their ordinary Org links, and every note the indented
+body of the item it belongs to."
   (interactive)
   (let ((section (magit-current-section)))
     (when (and section (eq (oref section type) 'bp/agent-session-note))
