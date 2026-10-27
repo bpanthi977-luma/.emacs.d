@@ -1207,5 +1207,47 @@
                                  :status))))
       (kill-buffer buffer))))
 
+(ert-deftest bp/agent-sessions-copy-tree-as-org-list ()
+  (bp/agent-sessions-test--with-temp-db
+    (let* ((bp/agent-sessions--notes nil)
+           (bp/agent-sessions--order nil)
+           (worktree (make-temp-file "agent-sessions-worktree-" t))
+           (plan (expand-file-name "plan.md" worktree))
+           (session (list :agent-session-id "thread-1" :agent-type "claude"
+                          :worktree-path worktree))
+           (row (magit-section))
+           (kill-ring nil)
+           (kill-ring-yank-pointer nil)
+           (interprogram-cut-function nil))
+      (unwind-protect
+          (progn
+            (oset row type 'bp/agent-session-row)
+            (oset row value "terminal")
+            (write-region "" nil plan)
+            (bp/agent-sessions--note-set
+             (bp/agent-sessions--session-note-keys session) "Done\nShipped")
+            (bp/agent-sessions--share-link
+             session "pr" "https://github.com/org/repo/pull/1" "PR #1")
+            (bp/agent-sessions--share-file session plan "")
+            (bp/agent-sessions--note-set
+             (list (bp/agent-sessions--file-note-key plan)) "Read first")
+            (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+                       (lambda (_) session))
+                      ((symbol-function 'magit-current-section)
+                       (lambda () row)))
+              (bp/agent-sessions-copy-tree))
+            (should (equal
+                     (concat
+                      "- [[agent-session:claude::thread-1::"
+                      (file-name-as-directory worktree)
+                      "][claude thread-1]]\n"
+                      "  Done\n"
+                      "  Shipped\n"
+                      "  - [[https://github.com/org/repo/pull/1][PR #1]]\n"
+                      "  - [[file:" (abbreviate-file-name plan) "][plan.md]]\n"
+                      "    Read first\n")
+                     (current-kill 0))))
+        (delete-directory worktree t)))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
