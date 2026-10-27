@@ -1249,5 +1249,47 @@
                      (current-kill 0))))
         (delete-directory worktree t)))))
 
+(ert-deftest bp/agent-sessions-copy-tree-nests-forks-under-parent ()
+  (bp/agent-sessions-test--with-temp-db
+    (let* ((bp/agent-sessions--notes nil)
+           (bp/agent-sessions--order nil)
+           (sessions
+            `(("parent" :agent-session-id "p" :agent-type "claude")
+              ("child" :agent-session-id "c" :agent-type "claude"
+               :branched-from ("p" . "parent"))
+              ("other" :agent-session-id "o" :agent-type "claude")
+              ;; A cycle has no root, and must still be copied once each.
+              ("loop-a" :agent-session-id "a" :agent-type "claude"
+               :branched-from ("b" . "loop-b"))
+              ("loop-b" :agent-session-id "b" :agent-type "claude"
+               :branched-from ("a" . "loop-a"))))
+           (worktree (magit-section))
+           (rows (mapcar (lambda (entry)
+                           (let ((row (magit-section)))
+                             (oset row type 'bp/agent-session-row)
+                             (oset row value (car entry))
+                             (oset row parent worktree)
+                             row))
+                         sessions)))
+      (oset worktree type 'bp/agent-session-worktree)
+      (oset worktree value (list :label "wt" :path "/nonexistent/wt"))
+      (oset worktree children rows)
+      (cl-letf (((symbol-function 'bp/agent-sessions--session-for-id)
+                 (lambda (id) (cdr (assoc id sessions))))
+                ((symbol-function 'bp/agent-sessions--session-org-link)
+                 (lambda (session)
+                   (cons (plist-get session :agent-session-id)
+                         (plist-get session :agent-session-id)))))
+        (should (equal (concat "- [[p][p]]\n"
+                               "  - [[c][c]]\n")
+                       (bp/agent-sessions--org-tree (car rows) "")))
+        (should (equal (concat "- wt\n"
+                               "  - [[p][p]]\n"
+                               "    - [[c][c]]\n"
+                               "  - [[o][o]]\n"
+                               "  - [[a][a]]\n"
+                               "    - [[b][b]]\n")
+                       (bp/agent-sessions--org-tree worktree "")))))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
