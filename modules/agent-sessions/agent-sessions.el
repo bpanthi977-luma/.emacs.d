@@ -1262,14 +1262,32 @@ buckets carries information, whereas a row moving because a tool ran does not.")
   (let ((buf (plist-get session :buffer)))
     (or (and (buffer-live-p buf) (buffer-name buf)) "")))
 
-(defun bp/agent-sessions--entry-buffer-name (entry)
-  (bp/agent-sessions--session-buffer-name (plist-get entry :session)))
+(defun bp/agent-sessions--session-terminal-id (session)
+  "SESSION's terminal id (`bp/agent-session-id'), or \"\" if it has none."
+  (let ((buf (plist-get session :buffer)))
+    (or (and (buffer-live-p buf) (buffer-local-value 'bp/agent-session-id buf))
+        "")))
+
+(defun bp/agent-sessions--entry-terminal-id (entry)
+  (bp/agent-sessions--session-terminal-id (plist-get entry :session)))
+
+(defun bp/agent-sessions--session-order-key (session)
+  "Manual-order key for SESSION: the agent's session id, else its terminal id.
+The agent's id is what survives a restart (a resumed session gets it back), so
+it keeps a placed row in its slot across one; a plain terminal has no such id
+and is placed only for as long as it lives.  Never the buffer name, which a
+title change rewrites."
+  (or (plist-get session :agent-session-id)
+      (bp/agent-sessions--session-terminal-id session)))
+
+(defun bp/agent-sessions--entry-order-key (entry)
+  (bp/agent-sessions--session-order-key (plist-get entry :session)))
 
 (defun bp/agent-sessions--sort-entries (entries)
-  "Sort ENTRIES by attention bucket, then oldest-first, then buffer name.
+  "Sort ENTRIES by attention bucket, then oldest-first, then terminal id.
 Every key is stable under ordinary activity: unlike `:updated-at', none of
 them changes when a session merely runs a tool, so two busy sessions keep
-their positions instead of trading places on each hook event.  The buffer name
+their positions instead of trading places on each hook event.  The terminal id
 is the final tie-break so the order never depends on hash-table iteration
 order (e.g. for buffers with no creation stamp)."
   (sort (copy-sequence entries)
@@ -1284,8 +1302,8 @@ order (e.g. for buffers with no creation stamp)."
                       ;; Unstamped buffers sort after stamped ones.
                       ((and ca (not cb)) t)
                       ((and cb (not ca)) nil)
-                      (t (string< (bp/agent-sessions--entry-buffer-name a)
-                                  (bp/agent-sessions--entry-buffer-name b))))))))))
+                      (t (string< (bp/agent-sessions--entry-terminal-id a)
+                                  (bp/agent-sessions--entry-terminal-id b))))))))))
 
 ;;; Persisted user intent ---------------------------------------------------
 ;;
@@ -1775,8 +1793,8 @@ can ever appear inside a path component and blur two scopes together.
 
 Item keys are stable identities rather than display labels, which change with
 a branch checkout: a canonical repo root, a canonical worktree path, and — for
-a session — its buffer name, the only session-level identity that can outlive
-a restart.  Backed by the `order_entries' table.")
+a session — its agent's session id, which a resumed session gets back after a
+restart, else its terminal id.  Backed by the `order_entries' table.")
 
 (defconst bp/agent-sessions--repos-scope '("repos"))
 
@@ -1920,7 +1938,7 @@ rest keep the automatic order after them."
                           (bp/agent-sessions--apply-manual-order
                            (bp/agent-sessions--sessions-scope
                             rkey (bp/agent-sessions--worktree-key wt))
-                           #'bp/agent-sessions--entry-buffer-name
+                           #'bp/agent-sessions--entry-order-key
                            (bp/agent-sessions--sort-entries
                             (plist-get wt :entries)))))
                        (plist-get repo :worktrees))
@@ -3333,7 +3351,7 @@ same path under another session by magit's parent chain."
                              (bp/agent-sessions--apply-manual-order
                               (bp/agent-sessions--sessions-scope
                                (bp/agent-sessions--repo-key repo) "")
-                              #'bp/agent-sessions--entry-buffer-name
+                              #'bp/agent-sessions--entry-order-key
                               (bp/agent-sessions--sort-entries items))))))
             repos)))
       (if bp/agent-sessions-sort-by-activity
@@ -3409,7 +3427,7 @@ same path under another session by magit's parent chain."
            members
          (bp/agent-sessions--apply-manual-order
           (bp/agent-sessions--folder-sessions-scope repo-key id)
-          #'bp/agent-sessions--entry-buffer-name members))))))
+          #'bp/agent-sessions--entry-order-key members))))))
 
 (defun bp/agent-sessions--refresh ()
   (interactive)
@@ -4399,15 +4417,15 @@ are exactly what the next render will order."
                       (members (bp/agent-sessions--folder-entries
                                 folder (plist-get repo :entries))))
                  (list (bp/agent-sessions--folder-sessions-scope rkey folder-id)
-                       (mapcar #'bp/agent-sessions--entry-buffer-name
+                       (mapcar #'bp/agent-sessions--entry-order-key
                                (if bp/agent-sessions-sort-by-activity
                                    members
                                  (bp/agent-sessions--apply-manual-order
                                   (bp/agent-sessions--folder-sessions-scope
                                    rkey folder-id)
-                                  #'bp/agent-sessions--entry-buffer-name
+                                  #'bp/agent-sessions--entry-order-key
                                   members)))
-                       (bp/agent-sessions--session-buffer-name session)))
+                       (bp/agent-sessions--session-order-key session)))
              (let* ((wt-sec (bp/agent-sessions--enclosing-section
                              'bp/agent-session-worktree))
                     (wt-key (and wt-sec
@@ -4420,9 +4438,9 @@ are exactly what the next render will order."
                          (plist-get repo :worktrees))))
                (when wt
                  (list (bp/agent-sessions--sessions-scope rkey wt-key)
-                       (mapcar #'bp/agent-sessions--entry-buffer-name
+                       (mapcar #'bp/agent-sessions--entry-order-key
                                (plist-get wt :entries))
-                       (bp/agent-sessions--session-buffer-name session))))))))
+                       (bp/agent-sessions--session-order-key session))))))))
       ('bp/agent-session-file
        (let* ((row (bp/agent-sessions--enclosing-section 'bp/agent-session-row))
               (session (and row (bp/agent-sessions--session-for-id
@@ -4499,8 +4517,9 @@ already at the end it is being moved towards."
 Only the enclosing group is affected: a session moves among sessions of its
 worktree or folder, and a folder or worktree moves within its repo.
 The chosen order is written to `bp/agent-sessions-db-file', so it survives
-both the session and Emacs itself; a session is remembered by its buffer name,
-so renaming one forgets its place.  Unavailable while sorting by activity
+both the session and Emacs itself; a session is remembered by its agent's
+session id, or by its terminal id when no agent has started in it, so a
+renamed buffer keeps its place.  Unavailable while sorting by activity
 \(`s'), which reorders by recency on every event.  `C-c C-o' clears it again."
   (interactive)
   (bp/agent-sessions--move 1))
@@ -5631,8 +5650,8 @@ command instead of sending it to an agent."
                                     (bp/agent-sessions--entry-created a))
                      t))
                   ((bp/agent-sessions--entry-created b) nil)
-                  (t (string< (bp/agent-sessions--entry-buffer-name a)
-                              (bp/agent-sessions--entry-buffer-name b))))))))
+                  (t (string< (bp/agent-sessions--entry-terminal-id a)
+                              (bp/agent-sessions--entry-terminal-id b))))))))
 
 (defun bp/agent-sessions--entry-shared-file (entry truename)
   "Return ENTRY's shared-file record for TRUENAME, or nil."
