@@ -1291,5 +1291,69 @@
                                "    - [[b][b]]\n")
                        (bp/agent-sessions--org-tree worktree "")))))))
 
+(ert-deftest bp/agent-sessions-manual-order-ignores-buffer-name ()
+  (bp/agent-sessions-test--with-temp-db
+   (let* ((agent (generate-new-buffer "*agent*"))
+          (bare (generate-new-buffer "*bare*"))
+          (entries
+           (list (list :session (list :buffer agent :agent-session-id "uuid-1"))
+                 (list :session (list :buffer bare))))
+          (scope (bp/agent-sessions--sessions-scope "/repo" "/repo/wt"))
+          (bp/agent-sessions--order nil))
+     (unwind-protect
+         (progn
+           (with-current-buffer bare (setq-local bp/agent-session-id "123-4"))
+           ;; An agent is keyed by its own session id, a bare terminal by its
+           ;; terminal id.
+           (should (equal (mapcar #'bp/agent-sessions--entry-order-key entries)
+                          '("uuid-1" "123-4")))
+           (bp/agent-sessions--order-write-group scope nil '("123-4" "uuid-1"))
+           (with-current-buffer agent (rename-buffer "wt - renamed agent"))
+           (with-current-buffer bare (rename-buffer "wt - renamed bare"))
+           (should (equal (bp/agent-sessions--apply-manual-order
+                           scope #'bp/agent-sessions--entry-order-key entries)
+                          (reverse entries))))
+       (mapc #'kill-buffer (list agent bare))))))
+
+(defmacro bp/agent-sessions-test--with-titled-terminal (buf &rest body)
+  "Run BODY with BUF bound to a terminal buffer in worktree `project_3'."
+  (declare (indent 1))
+  `(let ((,buf (generate-new-buffer "*eat*")))
+     (unwind-protect
+         (cl-letf (((symbol-function 'bp/agent-sessions--buffer-repo-info)
+                    (lambda (_) (list :worktree-name "project_3"))))
+           ,@body)
+       (kill-buffer ,buf))))
+
+(ert-deftest bp/agent-sessions-edit-title-renames-buffer ()
+  (bp/agent-sessions-test--with-titled-terminal buf
+    (cl-letf (((symbol-function 'bp/agent-sessions--session-at-point)
+               (lambda () (list :buffer buf)))
+              ((symbol-function 'bp/agent-sessions--refresh) #'ignore)
+              ((symbol-function 'read-string) (lambda (&rest _) "Fix login")))
+      (bp/agent-sessions-edit-title))
+    (should (equal (buffer-name buf) "project_3 - Fix login"))
+    (should (equal (buffer-local-value 'bp/agent-session-title-override buf)
+                   "Fix login"))
+    ;; Clearing the title keeps the name it last had.
+    (cl-letf (((symbol-function 'bp/agent-sessions--session-at-point)
+               (lambda () (list :buffer buf)))
+              ((symbol-function 'bp/agent-sessions--refresh) #'ignore)
+              ((symbol-function 'read-string) (lambda (&rest _) "")))
+      (bp/agent-sessions-edit-title))
+    (should-not (buffer-local-value 'bp/agent-session-title-override buf))
+    (should (equal (buffer-name buf) "project_3 - Fix login"))))
+
+(ert-deftest bp/agent-sessions-restored-title-renames-buffer ()
+  (bp/agent-sessions-test--with-titled-terminal buf
+    (cl-letf (((symbol-function 'bp/agent-sessions--refresh-if-visible) #'ignore))
+      (bp/agent-sessions--restore-title buf (list :title "Old task")))
+    (should (equal (buffer-name buf) "project_3 - Old task"))))
+
+(ert-deftest bp/agent-orchestration-worker-title-renames-buffer ()
+  (bp/agent-sessions-test--with-titled-terminal buf
+    (bp/agent-orchestration--mark-worker buf "coord" (list) "Write tests")
+    (should (equal (buffer-name buf) "project_3 - Write tests"))))
+
 (provide 'agent-sessions-test)
 ;;; agent-sessions-test.el ends here
