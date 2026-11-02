@@ -4010,11 +4010,28 @@ the existing session-row action remains available on every other row."
       (bp/agent-sessions-show-file-submission-diff)
     (bp/agent-sessions-detach-parent)))
 
+(defun bp/agent-sessions--set-title-override (buf title)
+  "Make TITLE the user-chosen title of session terminal BUF, nil to clear it.
+A title also renames BUF to `<worktree> - <title>' (just TITLE outside a
+worktree), so the buffer list and mode line say what the dashboard says.
+Clearing leaves the buffer name alone: it has no title to follow."
+  (with-current-buffer buf
+    (setq-local bp/agent-session-title-override title)
+    (when title
+      (let ((wt (bp/agent-sessions--session-worktree-name
+                 (bp/agent-sessions--buffer-repo-info buf))))
+        (rename-buffer (if (member wt '(nil "" "?"))
+                           title
+                         (format "%s - %s" wt title))
+                       t)))))
+
 (defun bp/agent-sessions-edit-title ()
   "Edit the title of the session at point.
 The chosen title is stored as a user override on the session's buffer, so it
 takes precedence over — and survives — the agent's own OSC title updates.
-Clearing it (entering an empty string) restores the agent's live title."
+The buffer is renamed to `<worktree> - <title>' to match.  Clearing the title
+\(entering an empty string) restores the agent's live title and leaves the
+buffer name as it is."
   (interactive)
   (let* ((session (bp/agent-sessions--session-at-point))
          (buf (and session (plist-get session :buffer))))
@@ -4024,9 +4041,8 @@ Clearing it (entering an empty string) restores the agent's live title."
                         (or bp/agent-session-title-override
                             bp/agent-session-title)))
              (new (string-trim (read-string "Session title: " initial))))
-        (with-current-buffer buf
-          (setq-local bp/agent-session-title-override
-                      (unless (string-empty-p new) new)))
+        (bp/agent-sessions--set-title-override
+         buf (unless (string-empty-p new) new))
         (bp/agent-sessions--refresh)
         (message (if (string-empty-p new)
                      "Title override cleared."
@@ -4715,8 +4731,7 @@ The log records the title that labelled the old terminal.  Making it an
 override preserves that label when the resumed agent emits fresh OSC titles."
   (when (buffer-live-p buf)
     (when-let ((title (plist-get row :title)))
-      (with-current-buffer buf
-        (setq-local bp/agent-session-title-override title))
+      (bp/agent-sessions--set-title-override buf title)
       (bp/agent-sessions--refresh-if-visible)))
   buf)
 
@@ -6058,9 +6073,9 @@ old customisation keeps working."
         (setq-local bp/agent-session--branched-from
                     (cons parent-sid
                           (bp/agent-sessions--session-short-label coordinator))))
-      (setq-local bp/agent-orchestration-coordinator coordinator-id)
-      (when (and title (not (string-empty-p title)))
-        (setq-local bp/agent-session-title-override title)))))
+      (setq-local bp/agent-orchestration-coordinator coordinator-id))
+    (when (and title (not (string-empty-p title)))
+      (bp/agent-sessions--set-title-override buf title))))
 
 (defun bp/agent-orchestration-spawn (coordinator-id type worktree task
                                                     &optional title model)
