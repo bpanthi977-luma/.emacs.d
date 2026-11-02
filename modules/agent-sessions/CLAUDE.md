@@ -260,7 +260,7 @@ made two concurrently busy sessions swap places several times a second — the
 row you were aiming at moved out from under point. The default order therefore
 uses only keys that are stable under activity: a coarse attention bucket
 (error → needs-attention → running → rest), then buffer creation time, then
-buffer name as a deterministic final tie-break (hash iteration order must never
+terminal id as a deterministic final tie-break (hash iteration order must never
 leak into the layout). A row *does* move when its status changes — that's a
 rare, meaningful event, unlike a tool call. Repos and worktrees are alphabetical.
 Folder view rows start with a dynamically sized worktree column. Recency sort
@@ -274,8 +274,11 @@ recorded key keep the automatic order and sort *after* the placed ones, so a new
 session never displaces a slot the user chose; rewriting a group splices the
 visible keys back into the saved list instead of replacing it, so a repo or
 session whose terminal is closed doesn't lose its remembered slot; and
-keys are stable identities (canonical paths, buffer name for a row) rather than
-display labels, which change on a branch checkout. Reordering acts on the flat
+keys are stable identities rather than display labels, which change on a
+branch checkout. A row is keyed by its agent's session id — which a session
+resumed after a restart gets back — or by its terminal id when no agent has
+started in it. Never by buffer name: setting a title renames the buffer (see
+below), and the order must not depend on what a session is called. Reordering acts on the flat
 per-repo list that `--insert-entries` then nests, so moving a *fork* row
 past a sibling of its parent's group may not visibly move it — the nesting wins.
 Manual order is disabled while `s` (recency) is active; those two orderings
@@ -317,6 +320,14 @@ that single call so the looping behaviour survives everywhere else. Build the
 keymap and prompt from project.el's own `project-switch-commands` /
 `project-prefix-map` / `project--menu-prompt` rather than a private list, so a
 user's customised menu keeps working.
+
+**A title names the buffer too.** Every path that sets a title override — `SPC`
+on the dashboard, a title restored by `R`/restore-previous, a worker's task from
+`emacs-agent spawn` — goes through `--set-title-override`, which renames the
+terminal to `<worktree> - <title>` so the buffer list and mode line say what the
+dashboard says. Clearing a title leaves the name alone. The agent's own OSC
+title never renames anything: it changes constantly, and a buffer name that
+churns under `C-x b` is worse than a stale one.
 
 **A note follows the most durable identity its subject has.** Repos and
 worktrees are keyed by canonical path, as above, but a *session* prefers the
