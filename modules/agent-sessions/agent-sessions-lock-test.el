@@ -299,6 +299,30 @@ name, and then succeeds."
                          "    ⏳ stack  Bee waiting\n")
                  (buffer-substring-no-properties (point-min) (point-max))))))))
 
+(ert-deftest bp/lock-session-marker-shows-locks-held-and-queue-places ()
+  (let ((bp/agent-locks--held
+         (list (list :name "stack" :holder '("session" "H"))
+               (list :name "a/" :holder '("session" "M"))
+               (list :name "b/" :holder '("session" "M"))))
+        (bp/agent-locks--waiters
+         (list (list :name "stack" :waiter '("session" "W1"))
+               (list :name "stack" :waiter '("session" "W2"))
+               (list :name "db" :waiter '("session" "X"))
+               (list :name "db" :waiter '("session" "W2"))
+               (list :name "db" :waiter '("session" "M")))))
+    ;; The count is locks held, not who waits behind them.
+    (should (equal "🔒" (bp/agent-locks--session-marker "1" '(:agent-session-id "H"))))
+    (should (equal "🔒 (2) ⏳ (3)"
+                   (bp/agent-locks--session-marker "2" '(:agent-session-id "M"))))
+    (should (equal "⏳ (1)" (bp/agent-locks--session-marker "3" '(:agent-session-id "W1"))))
+    ;; One place per queue, in queue order.
+    (should (equal "⏳ (2, 2)" (bp/agent-locks--session-marker "4" '(:agent-session-id "W2"))))
+    (should (equal "" (bp/agent-locks--session-marker "5" '(:agent-session-id "Y"))))
+    ;; Padding is by display width, so rows with and without 🔒 line up.
+    (should (= (string-width (bp/agent-locks--pad "🔒" 7))
+               (string-width (bp/agent-locks--pad "⏳ (1)" 7))
+               (string-width (bp/agent-locks--pad "" 7))))))
+
 (ert-deftest bp/lock-rows-hang-under-their-session ()
   (bp/lock-test-with-db
     (bp/lock-test--run "A" "acquire" "stack" "--new" "the stack" "--why" "e2e run")

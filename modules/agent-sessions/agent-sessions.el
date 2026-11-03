@@ -1040,6 +1040,11 @@ not push the titles of stated rows out of line with unstated ones."
 (defvar-local bp/agent-sessions--worktree-column-width 1
   "Width of the worktree name column in the current dashboard render.")
 
+(defvar-local bp/agent-sessions--lock-column-width 0
+  "Width of the lock column in the current dashboard render.
+Zero when no session holds or waits for a lock, so the column costs nothing
+on a dashboard that does not use locks.")
+
 (defun bp/agent-sessions--row-text (prefix state suffix face)
   "Build a session row: PREFIX, STATE in its own column, then SUFFIX.
 FACE dresses the whole row (it is what spans an attention highlight across it),
@@ -1099,7 +1104,9 @@ indentation conveys the relationship."
                     (bp/agent-sessions--session-worktree-name session)))
                  marker
                  (format "%-7s %-16s "
-                         (or (plist-get session :agent-type) "") status))
+                         (or (plist-get session :agent-type) "") status)
+                 (bp/agent-locks--pad (bp/agent-locks--session-marker id session)
+                                      bp/agent-sessions--lock-column-width))
          (bp/agent-sessions--session-state session)
          (format "%s%s%s%s%s\n"
                  title
@@ -3523,6 +3530,15 @@ same path under another session by magit's parent chain."
                                     (bp/agent-sessions--session-worktree-name
                                      (plist-get entry :session))))
                                  entries))))
+        (setq bp/agent-sessions--lock-column-width
+              (let ((widest (apply #'max 0
+                                   (mapcar (lambda (entry)
+                                             (string-width
+                                              (bp/agent-locks--session-marker
+                                               (plist-get entry :id)
+                                               (plist-get entry :session))))
+                                           entries))))
+                (if (> widest 0) (1+ widest) 0)))
         (let ((repos (bp/agent-sessions--build-tree entries)))
           (if (null repos)
               (insert "No active sessions.\n")
@@ -6719,6 +6735,42 @@ most needs to notice, so it borrows the error face."
               (bp/agent-locks--why waiter)
               "\n")
       'font-lock-face 'bp/agent-session-file))))
+
+(defun bp/agent-locks--session-marker (id session)
+  "The lock column for session ID, e.g. `🔒', `🔒 (2)', `⏳ (1, 3)', or empty.
+A holder shows how many locks it holds, when more than one; who is queued
+behind each lock is on that lock's row.  A waiter shows its place in each queue
+it is in (1 being next), in the order its `⏳' rows are drawn, so each number
+can be matched to its lock.  A session that holds one lock and waits for
+another shows both: being blocked is not hidden by also blocking others."
+  (let* ((key (bp/agent-orchestration--mail-key id session))
+         (held (delq nil (mapcar (lambda (lock)
+                                   (and (equal (plist-get lock :holder) key)
+                                        (plist-get lock :name)))
+                                 bp/agent-locks--held)))
+         ;; The waiters list is in ticket order, so a place is an index.
+         (places (delq nil
+                       (mapcar (lambda (w)
+                                 (and (equal (plist-get w :waiter) key)
+                                      (1+ (seq-position
+                                           (seq-filter
+                                            (lambda (other)
+                                              (equal (plist-get other :name)
+                                                     (plist-get w :name)))
+                                            bp/agent-locks--waiters)
+                                           w))))
+                               bp/agent-locks--waiters))))
+    (string-join
+     (delq nil
+           (list (and held (if (cdr held) (format "🔒 (%d)" (length held)) "🔒"))
+                 (and places
+                      (format "⏳ (%s)"
+                              (mapconcat #'number-to-string places ", ")))))
+     " ")))
+
+(defun bp/agent-locks--pad (text width)
+  "TEXT padded with spaces to display WIDTH; emoji are two columns wide."
+  (concat text (make-string (max 0 (- width (string-width text))) ?\s)))
 
 (defun bp/agent-locks--insert-session-locks (id session indent)
   "Insert rows for the locks session ID holds and waits for, at INDENT."

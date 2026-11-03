@@ -829,6 +829,12 @@ read when a title and a reason started with the same ticket id. The section
 above the repos keeps only locks and waiters with no session row to hang from
 (a killed holder, another Emacs, a script), which is also where a not-running
 holder that still blocks everyone is most visible.
+The session row also gets a lock column after its status, `🔒 (N)` for the N
+locks it holds (bare `🔒` for one) and `⏳ (1, 3)` for its place in each queue
+it is in, both
+when it holds one lock and waits for another, so who is blocking whom reads at
+a glance even with the session folded; the column has no width when no session
+uses a lock.
 
 **A restored holder is re-attached at its first hook event.** That is where its
 durable id meets a live terminal, the same moment its mail is hydrated, so its
