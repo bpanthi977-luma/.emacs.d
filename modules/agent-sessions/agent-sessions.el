@@ -625,7 +625,10 @@ to the terminal that actually owns the event."
         ;; terminal paste safe.
         (bp/agent-orchestration--hydrate session-id)
         (bp/agent-orchestration-deliver
-         session-id (equal event-name "UserPromptSubmit"))))
+         session-id (equal event-name "UserPromptSubmit"))
+        ;; Likewise the locks it held before a crash or `k': it believes it
+        ;; still holds them, so they should read as running again.
+        (bp/agent-locks--adopt session-id agent-session-id)))
     (bp/agent-sessions--refresh-if-visible))
   nil)
 
@@ -6586,6 +6589,41 @@ at all, so liveness is recomputed here too."
   (when (or bp/agent-locks--held bp/agent-locks--waiters
             (get-buffer bp/agent-sessions-buffer-name))
     (bp/agent-locks-changed)))
+
+(defun bp/agent-locks--adopt (id agent-session-id)
+  "Point AGENT-SESSION-ID's locks at terminal ID's process if they lost theirs.
+Called on every hook event, so it touches the database only when the working
+copy shows this conversation holding a lock that is not running — a session
+restored with `R', or one whose agent recorded no pid at all.  The terminal's
+process is the stand-in: it lives at least as long as the agent in it."
+  (when agent-session-id
+    (condition-case err
+        (progn
+          (bp/agent-locks--ensure-loaded)
+          (let* ((key (list "session" agent-session-id))
+                 (names (delq nil
+                              (mapcar (lambda (lock)
+                                        (and (equal (plist-get lock :holder) key)
+                                             (not (eq (plist-get lock :liveness)
+                                                      'running))
+                                             (plist-get lock :name)))
+                                      bp/agent-locks--held)))
+                 (buf (and names (gethash id bp/agent-session-id->buffer)))
+                 (proc (and (buffer-live-p buf) (get-buffer-process buf)))
+                 (pid (and proc (process-id proc)))
+                 (start (and pid (bp/agent-locks--pid-start pid))))
+            (when start
+              (let ((db (bp/agent-sessions--db)))
+                (with-sqlite-transaction db
+                  (dolist (name names)
+                    (sqlite-execute db "UPDATE locks
+                                           SET holder_pid = ?, holder_pid_start = ?
+                                         WHERE name = ? AND holder_kind = ?
+                                           AND holder_key = ?"
+                                    (append (list pid start name) key)))))
+              (bp/agent-locks--reload))))
+      (error (message "agent-sessions: could not adopt locks (%s)"
+                      (error-message-string err))))))
 
 ;;;; Dashboard
 
