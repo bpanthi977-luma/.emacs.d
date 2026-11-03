@@ -52,7 +52,11 @@ additive.  Assembling one from anywhere else could silently *shrink* the
 shell's PATH, which is the failure mode worth designing away here."
   (append (list (format "EMACS_AGENT_SESSION_ID=%s" id)
                 (format "PATH=%s%s%s" bp/agent-sessions--bin-dir path-separator
-                        (or (getenv "PATH") "")))
+                        (or (getenv "PATH") ""))
+                ;; `emacs-lock' opens the database itself; tell it which one,
+                ;; so it follows a customised `bp/agent-sessions-db-file'.
+                (format "EMACS_AGENT_SESSIONS_DB=%s"
+                        (expand-file-name bp/agent-sessions-db-file)))
           bp/agent-sessions--extra-terminal-env))
 
 (defvar bp/agent-session-id->buffer (make-hash-table :test 'equal)
@@ -1650,7 +1654,8 @@ reason — an Emacs with no agent sessions has nothing to date."
   (when (sqlitep bp/agent-sessions--db)
     (bp/agent-sessions--meta-set bp/agent-sessions--db
                                  "last_seen" (bp/agent-sessions--now))
-    (bp/agent-sessions--log-reopen-live bp/agent-sessions--db)))
+    (bp/agent-sessions--log-reopen-live bp/agent-sessions--db)
+    (bp/agent-locks--tick)))
 
 (defun bp/agent-sessions--log-reopen-live (db)
   "Reopen any log row in DB that a terminal still running here points at.
@@ -3655,6 +3660,7 @@ invalidates the worktree cache and re-reads each session's repo/branch info."
   (interactive)
   (clrhash bp/agent-sessions--worktrees-cache)
   (bp/agent-sessions--reread-repo-info)
+  (bp/agent-locks--reload)
   (bp/agent-sessions--refresh))
 
 (defun bp/agent-sessions--refresh-if-visible ()
@@ -6476,6 +6482,97 @@ out one that is already taken — or hide one that just became available."
                           ""))))
             worktrees "")))))))
 
+;;; Locks -------------------------------------------------------------------
+;; `bin/emacs-lock' takes and releases locks by writing the database with
+;; sqlite3 directly (see "Locks" in CLAUDE.md).  Emacs keeps a working copy
+;; for the render path, which must never query the database, and reloads it
+;; when the CLI pokes `bp/agent-locks-changed' and on the heartbeat, which
+;; catches changes made while no Emacs was listening.
+
+(defvar bp/agent-locks--held nil
+  "Held locks as plists, oldest first: the render path's copy of `locks'.")
+
+(defvar bp/agent-locks--waiters nil
+  "Live queued waiters as plists, in ticket order.")
+
+(defvar bp/agent-locks--loaded-p nil
+  "Non-nil once the working copy has been read at least once.")
+
+(defun bp/agent-locks--pid-start (pid)
+  "PID's start time as `ps -o lstart=' prints it, or nil when it is gone.
+The same spelling `bin/emacs-lock' records, so the two compare as strings and a
+reused pid, which has a different start time, does not read as the holder."
+  (when (and (integerp pid) (> pid 0))
+    (with-temp-buffer
+      (when (eq 0 (call-process "ps" nil t nil "-o" "lstart="
+                                "-p" (number-to-string pid)))
+        (let ((start (string-trim (buffer-string))))
+          (unless (string-empty-p start) start))))))
+
+(defun bp/agent-locks--liveness (pid start)
+  "Whether the process PID that started at START is still running.
+`unknown' when no process was recorded, which happens for agents whose
+environment names no long-lived pid until Emacs adopts the lock."
+  (cond ((null pid) 'unknown)
+        ((equal (bp/agent-locks--pid-start pid) start) 'running)
+        (t 'not-running)))
+
+(defun bp/agent-locks--reload ()
+  "Re-read held locks and live waiters into the working copy.
+Return non-nil when what the dashboard would show has changed."
+  (let* ((db (bp/agent-sessions--db))
+         (now (bp/agent-sessions--now))
+         (held
+          (mapcar
+           (pcase-lambda (`(,name ,is-dir ,kind ,key ,label ,pid ,start ,why ,at))
+             (list :name name :dir (eql is-dir 1) :holder (list kind key)
+                   :label label :pid pid :pid-start start :why why
+                   :acquired-at at
+                   :liveness (bp/agent-locks--liveness pid start)))
+           (sqlite-select db "SELECT name, is_dir, holder_kind, holder_key,
+                                     holder_label, holder_pid, holder_pid_start,
+                                     why, acquired_at
+                                FROM locks ORDER BY acquired_at")))
+         (waiters
+          (mapcar
+           (pcase-lambda (`(,name ,kind ,key ,label ,why))
+             (list :name name :waiter (list kind key) :label label :why why))
+           (sqlite-select db "SELECT name, waiter_kind, waiter_key,
+                                     waiter_label, why
+                                FROM lock_waiters WHERE expires_at >= ?
+                               ORDER BY ticket"
+                          (list now))))
+         (changed (not (and (equal held bp/agent-locks--held)
+                            (equal waiters bp/agent-locks--waiters)))))
+    (setq bp/agent-locks--held held
+          bp/agent-locks--waiters waiters
+          bp/agent-locks--loaded-p t)
+    changed))
+
+(defun bp/agent-locks--ensure-loaded ()
+  "Load the working copy once, for callers that run before anything poked."
+  (unless bp/agent-locks--loaded-p
+    (bp/agent-locks--reload)))
+
+(defun bp/agent-locks-changed ()
+  "Entry point `bin/emacs-lock' pokes after it changes a lock.
+Reload the working copy and redraw.  Errors are swallowed: the poke is
+best-effort by design, and nothing reads its reply."
+  (condition-case err
+      (when (bp/agent-locks--reload)
+        (bp/agent-sessions--refresh-if-visible))
+    (error (message "agent-sessions: could not reload locks (%s)"
+                    (error-message-string err))))
+  nil)
+
+(defun bp/agent-locks--tick ()
+  "Heartbeat half of the reload: catch changes no poke announced.
+A poke reaches only the default server, and a holder's death announces nothing
+at all, so liveness is recomputed here too."
+  (when (or bp/agent-locks--held bp/agent-locks--waiters
+            (get-buffer bp/agent-sessions-buffer-name))
+    (bp/agent-locks-changed)))
+
 (define-key bp/agent-sessions-mode-map (kbd "RET") #'bp/agent-sessions-jump)
 (define-key bp/agent-sessions-mode-map (kbd "d") #'bp/agent-sessions-show-file-diff)
 (define-key bp/agent-sessions-mode-map (kbd "v") #'bp/agent-sessions-display)
@@ -6793,6 +6890,7 @@ Org link type, the `C-x p a' project binding, and starting the Emacs server
     (with-current-buffer buf
       (unless (derived-mode-p 'bp/agent-sessions-mode)
         (bp/agent-sessions-mode))
+      (bp/agent-locks--reload)
       (bp/agent-sessions--refresh))
     (pop-to-buffer buf)))
 
