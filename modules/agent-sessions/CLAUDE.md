@@ -822,6 +822,14 @@ rule: a dead Emacs must not fail the agent), and Emacs reloads its working copy.
 The heartbeat reloads too, catching changes made while no Emacs was listening
 and holders that died, which announce nothing.
 
+**A lock hangs under its holder, like a shared file.** The session row already
+says who holds it, so the lock row says only what, for how long, and why; one
+row that named the lock, the holder and the reason side by side was hard to
+read when a title and a reason started with the same ticket id. The section
+above the repos keeps only locks and waiters with no session row to hang from
+(a killed holder, another Emacs, a script), which is also where a not-running
+holder that still blocks everyone is most visible.
+
 **A restored holder is re-attached at its first hook event.** That is where its
 durable id meets a live terminal, the same moment its mail is hydrated, so its
 locks are pointed at the terminal's process and read as running again. The

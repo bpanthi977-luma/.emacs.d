@@ -291,8 +291,35 @@ name, and then succeeds."
       (let ((bp/agent-sessions-buffer-name (buffer-name)))
         (bp/agent-sessions-mode)
         (bp/agent-sessions--refresh)
-        (should (string-match-p "^Locks\n    stack  A (liveness unknown)  [0-9]+s  ⏳ Bee$"
-                                (buffer-substring-no-properties (point-min) (point-max))))))))
+        ;; Neither A nor B has a session row here, so both show in the
+        ;; section, each naming who it is.
+        (should (string-match-p
+                 (concat "^Locks held outside the sessions below\n"
+                         "    🔒 stack  held by A (liveness unknown) for [0-9]+s  ⏳ Bee\n"
+                         "    ⏳ stack  Bee waiting\n")
+                 (buffer-substring-no-properties (point-min) (point-max))))))))
+
+(ert-deftest bp/lock-rows-hang-under-their-session ()
+  (bp/lock-test-with-db
+    (bp/lock-test--run "A" "acquire" "stack" "--new" "the stack" "--why" "e2e run")
+    (sqlite-execute (bp/agent-sessions--db)
+                    "INSERT INTO lock_waiters (name, is_dir, waiter_kind, waiter_key, waiter_label, why, expires_at)
+                     VALUES ('db', 0, 'session', 'A', 'A', 'migrate', ?)"
+                    (list (+ (bp/agent-sessions--now) 60)))
+    (bp/agent-locks--reload)
+    (with-temp-buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (bp/agent-sessions-root)
+          (bp/agent-locks--insert-session-locks "1-1" '(:agent-session-id "A") "        ")
+          (bp/agent-locks--insert-session-locks "1-2" '(:agent-session-id "B") "        ")))
+      (should (string-match-p
+               "\\`        🔒 stack  [0-9]+s — e2e run\n        ⏳ db  waiting — migrate\n\\'"
+               (buffer-substring-no-properties (point-min) (point-max))))
+      (goto-char (point-min))
+      (should (equal "stack" (plist-get (bp/agent-locks--at-point) :name)))
+      (forward-line 1)
+      (should-not (bp/agent-locks--at-point)))))
 
 (ert-deftest bp/lock-force-release-files-notice-without-reviving ()
   (bp/lock-test-with-db

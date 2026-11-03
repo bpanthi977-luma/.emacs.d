@@ -1101,10 +1101,9 @@ indentation conveys the relationship."
                  (format "%-7s %-16s "
                          (or (plist-get session :agent-type) "") status))
          (bp/agent-sessions--session-state session)
-         (format "%s%s%s%s%s%s\n"
+         (format "%s%s%s%s%s\n"
                  title
                  (bp/agent-orchestration--row-badge id)
-                 (bp/agent-locks--row-badge id session)
                  (if folder (format "  [%s]" (plist-get folder :name)) "")
                  (if (and branched-from (not suppress-parent-note))
                      (format "  ↳ from %s" (cdr branched-from))
@@ -1118,7 +1117,9 @@ indentation conveys the relationship."
        (bp/agent-sessions--session-note-keys session)
        (concat base indent "    "))
       (bp/agent-sessions--insert-links session (concat base indent "    "))
-      (bp/agent-sessions--insert-files session (concat base indent "    ")))))
+      (bp/agent-sessions--insert-files session (concat base indent "    "))
+      (bp/agent-locks--insert-session-locks id session
+                                            (concat base indent "    ")))))
 
 (defun bp/agent-sessions--insert-entries (entries)
   "Insert ENTRIES, nesting any branched session under its parent when present.
@@ -3571,7 +3572,9 @@ same path under another session by magit's parent chain."
          'bp/agent-lock-row)
      1)
     ('bp/agent-session-row 2)
-    ((or 'bp/agent-session-file 'bp/agent-session-link) 3)
+    ((or 'bp/agent-session-file 'bp/agent-session-link
+         'bp/agent-session-lock 'bp/agent-session-lock-wait)
+     3)
     (_ parent-depth)))
 
 (defun bp/agent-sessions--overview-max-level ()
@@ -3877,9 +3880,10 @@ Detaching drops only the dashboard pointer; files on disk and external targets
 are untouched.  Killing a session leaves the locks it holds held, shown as not
 running: a restored session still believes it holds them."
   (interactive)
-  (if (bp/agent-locks--at-point)
-      (bp/agent-locks-release-at-point)
-    (bp/agent-sessions--kill-attachment-or-session)))
+  (cond ((bp/agent-locks--at-point) (bp/agent-locks-release-at-point))
+        ((bp/agent-sessions--enclosing-section 'bp/agent-session-lock-wait)
+         (message "The agent leaves a queue itself; there is nothing to release."))
+        (t (bp/agent-sessions--kill-attachment-or-session))))
 
 (defun bp/agent-sessions--kill-attachment-or-session ()
   (pcase (bp/agent-sessions--link-at-point)
@@ -6641,23 +6645,11 @@ process is the stand-in: it lives at least as long as the agent in it."
   "NAME as the dashboard shows it: directories abbreviated, with their slash."
   (if (string-prefix-p "/" name) (abbreviate-file-name name) name))
 
-(defun bp/agent-locks--row-badge (id session)
-  "The suffix on session ID's row naming the locks it holds and waits for."
-  (let ((key (bp/agent-orchestration--mail-key id session)))
-    (concat
-     (mapconcat (lambda (lock)
-                  (format "  🔒%s" (bp/agent-locks--display-name
-                                    (plist-get lock :name))))
-                (seq-filter (lambda (lock) (equal (plist-get lock :holder) key))
-                            bp/agent-locks--held)
-                "")
-     (mapconcat (lambda (waiter)
-                  (format "  ⏳%s" (bp/agent-locks--display-name
-                                    (plist-get waiter :name))))
-                (seq-filter (lambda (waiter)
-                              (equal (plist-get waiter :waiter) key))
-                            bp/agent-locks--waiters)
-                ""))))
+;; A lock is drawn under the session holding it, the way a shared file is, so
+;; the session row is its holder and the lock row only says what and why.
+;; The Locks section above the repos keeps only what has no session row to
+;; hang from: a holder that is not running here (killed, another Emacs, a
+;; script), and a waiter in the same position.
 
 (defun bp/agent-locks--age (seconds)
   (cond ((< seconds 60) (format "%ds" seconds))
@@ -6666,63 +6658,104 @@ process is the stand-in: it lives at least as long as the agent in it."
                                    (/ (% seconds 3600) 60)))
         (t (format "%dd" (/ seconds 86400)))))
 
-(defun bp/agent-locks--insert-section ()
-  "Insert the Locks section above the repos, when anything is held or queued.
+(defun bp/agent-locks--why (plist)
+  "PLIST's reason as a trailing ` — why', or an empty string."
+  (if-let ((why (plist-get plist :why)))
+      (format " — %s" why)
+    ""))
+
+(defun bp/agent-locks--queue-text (name)
+  "Who is queued for NAME, as a trailing `  ⏳ A, B', or an empty string."
+  (let ((queue (seq-filter (lambda (w) (equal (plist-get w :name) name))
+                           bp/agent-locks--waiters)))
+    (if queue
+        (format "  ⏳ %s" (mapconcat (lambda (w) (plist-get w :label)) queue ", "))
+      "")))
+
+(defun bp/agent-locks--insert-held (lock indent &optional show-holder)
+  "Insert a row for held LOCK at INDENT.
+SHOW-HOLDER names the holder in the row, for the Locks section, where no
+session row above says who it is.  The two places use different section
+types so `S-TAB' treats a lock under a session like that session's files.
 A holder that is not running still blocks everyone, and is the row the user
 most needs to notice, so it borrows the error face."
-  (when (or bp/agent-locks--held bp/agent-locks--waiters)
-    (let ((now (bp/agent-sessions--now)))
+  (let* ((name (plist-get lock :name))
+         (liveness (plist-get lock :liveness))
+         (age (bp/agent-locks--age (- (bp/agent-sessions--now)
+                                      (plist-get lock :acquired-at))))
+         (row
+          (propertize
+           (concat indent "🔒 " (bp/agent-locks--display-name name) "  "
+                   (if show-holder
+                       (format "held by %s%s for %s"
+                               (or (plist-get lock :label)
+                                   (cadr (plist-get lock :holder)))
+                               (pcase liveness
+                                 ('not-running " (not running)")
+                                 ('unknown " (liveness unknown)")
+                                 (_ ""))
+                               age)
+                     (concat age (if (eq liveness 'not-running)
+                                     " (not running)" "")))
+                   (bp/agent-locks--why lock)
+                   (bp/agent-locks--queue-text name)
+                   "\n")
+           'font-lock-face (if (eq liveness 'not-running)
+                               'bp/agent-session-error
+                             'bp/agent-session-file))))
+    (if show-holder
+        (magit-insert-section (bp/agent-lock-row name) (insert row))
+      (magit-insert-section (bp/agent-session-lock name) (insert row)))))
+
+(defun bp/agent-locks--insert-waiting (waiter indent &optional show-waiter)
+  "Insert a row for WAITER at INDENT; SHOW-WAITER names who is waiting."
+  (magit-insert-section (bp/agent-session-lock-wait (plist-get waiter :name))
+    (insert
+     (propertize
+      (concat indent "⏳ " (bp/agent-locks--display-name (plist-get waiter :name))
+              "  " (if show-waiter
+                       (format "%s waiting" (plist-get waiter :label))
+                     "waiting")
+              (bp/agent-locks--why waiter)
+              "\n")
+      'font-lock-face 'bp/agent-session-file))))
+
+(defun bp/agent-locks--insert-session-locks (id session indent)
+  "Insert rows for the locks session ID holds and waits for, at INDENT."
+  (let ((key (bp/agent-orchestration--mail-key id session)))
+    (dolist (lock bp/agent-locks--held)
+      (when (equal (plist-get lock :holder) key)
+        (bp/agent-locks--insert-held lock indent)))
+    (dolist (waiter bp/agent-locks--waiters)
+      (when (equal (plist-get waiter :waiter) key)
+        (bp/agent-locks--insert-waiting waiter indent)))))
+
+(defun bp/agent-locks--insert-section ()
+  "Insert the Locks section: locks and waiters with no session row here."
+  (let* ((keys (mapcar (lambda (entry)
+                         (bp/agent-orchestration--mail-key
+                          (plist-get entry :id) (plist-get entry :session)))
+                       (bp/agent-sessions--live-entries)))
+         (held (seq-remove (lambda (lock) (member (plist-get lock :holder) keys))
+                           bp/agent-locks--held))
+         (waiters (seq-remove (lambda (w) (member (plist-get w :waiter) keys))
+                              bp/agent-locks--waiters)))
+    (when (or held waiters)
       (magit-insert-section (bp/agent-locks-root)
         (magit-insert-heading
-          (propertize "Locks\n" 'font-lock-face 'magit-section-heading))
-        (dolist (lock bp/agent-locks--held)
-          (let* ((name (plist-get lock :name))
-                 (liveness (plist-get lock :liveness))
-                 (queue (seq-filter (lambda (w) (equal (plist-get w :name) name))
-                                    bp/agent-locks--waiters)))
-            (magit-insert-section (bp/agent-lock-row name)
-              (insert
-               (propertize
-                (format "    %s  %s%s  %s%s%s\n"
-                        (bp/agent-locks--display-name name)
-                        (or (plist-get lock :label)
-                            (cadr (plist-get lock :holder)))
-                        (pcase liveness
-                          ('not-running " (not running)")
-                          ('unknown " (liveness unknown)")
-                          (_ ""))
-                        (bp/agent-locks--age
-                         (- now (plist-get lock :acquired-at)))
-                        (if-let ((why (plist-get lock :why)))
-                            (format "  %s" why)
-                          "")
-                        (if queue
-                            (format "  ⏳ %s"
-                                    (mapconcat (lambda (w) (plist-get w :label))
-                                               queue ", "))
-                          ""))
-                'font-lock-face (if (eq liveness 'not-running)
-                                    'bp/agent-session-error
-                                  'default))))))
-        ;; Waiters blocked by containment or a queue on a lock nobody holds
-        ;; under that exact name would otherwise not be shown anywhere.
-        (dolist (waiter bp/agent-locks--waiters)
-          (unless (seq-some (lambda (lock)
-                              (equal (plist-get lock :name)
-                                     (plist-get waiter :name)))
-                            bp/agent-locks--held)
-            (insert (format "    %s  ⏳ %s%s\n"
-                            (bp/agent-locks--display-name
-                             (plist-get waiter :name))
-                            (plist-get waiter :label)
-                            (if-let ((why (plist-get waiter :why)))
-                                (format "  %s" why)
-                              "")))))
+          (propertize "Locks held outside the sessions below\n"
+                      'font-lock-face 'magit-section-heading))
+        (dolist (lock held)
+          (bp/agent-locks--insert-held lock "    " t))
+        (dolist (waiter waiters)
+          (bp/agent-locks--insert-waiting waiter "    " t))
         (insert "\n")))))
 
 (defun bp/agent-locks--at-point ()
   "The held lock whose row point is on, or nil."
-  (when-let ((section (bp/agent-sessions--enclosing-section 'bp/agent-lock-row)))
+  (when-let ((section (or (bp/agent-sessions--enclosing-section 'bp/agent-lock-row)
+                          (bp/agent-sessions--enclosing-section
+                           'bp/agent-session-lock))))
     (seq-find (lambda (lock) (equal (plist-get lock :name) (oref section value)))
               bp/agent-locks--held)))
 
