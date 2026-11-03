@@ -1458,7 +1458,54 @@ order (e.g. for buffers with no creation stamp)."
        shared_at  INTEGER NOT NULL,
        updated_at INTEGER NOT NULL,
        visited_at INTEGER,
-       PRIMARY KEY (owner_kind, owner_key, url))")
+       PRIMARY KEY (owner_kind, owner_key, url))"
+
+    ;; Locks are taken and released by `bin/emacs-lock' talking to this file
+    ;; with sqlite3 directly, never through Emacs; Emacs only owns the schema
+    ;; and reads the rows.  A holder is a durable conversation key, so a held
+    ;; lock survives its terminal, and `holder_pid' plus its start time is how
+    ;; anyone can tell whether the holder is still running.  Directory names
+    ;; end in "/" so containment is a plain prefix test.
+    "CREATE TABLE IF NOT EXISTS locks (
+       name             TEXT    PRIMARY KEY,
+       is_dir           INTEGER NOT NULL,
+       holder_kind      TEXT    NOT NULL,
+       holder_key       TEXT    NOT NULL,
+       holder_label     TEXT,
+       holder_pid       INTEGER,
+       holder_pid_start TEXT,
+       why              TEXT,
+       acquired_at      INTEGER NOT NULL)"
+    ;; The ticket orders the queue; a waiter renews `expires_at' on every
+    ;; poll, so one that stopped polling drops out instead of blocking.
+    "CREATE TABLE IF NOT EXISTS lock_waiters (
+       ticket       INTEGER PRIMARY KEY AUTOINCREMENT,
+       name         TEXT    NOT NULL,
+       is_dir       INTEGER NOT NULL,
+       waiter_kind  TEXT    NOT NULL,
+       waiter_key   TEXT    NOT NULL,
+       waiter_label TEXT,
+       why          TEXT,
+       expires_at   INTEGER NOT NULL,
+       UNIQUE (name, waiter_kind, waiter_key))"
+    ;; Free-form lock names ever used, so the next agent reuses a spelling
+    ;; instead of inventing one.  Directories never appear: they name
+    ;; themselves.  `id' is the cursor `lock_name_seen' compares against.
+    "CREATE TABLE IF NOT EXISTS lock_names (
+       id           INTEGER PRIMARY KEY AUTOINCREMENT,
+       name         TEXT    NOT NULL UNIQUE,
+       description  TEXT    NOT NULL,
+       created_by   TEXT,
+       created_at   INTEGER NOT NULL,
+       last_used_at INTEGER NOT NULL)"
+    ;; The newest `lock_names.id' each holder has been shown.  Creating a name
+    ;; is refused while a newer one exists, so no one invents a second
+    ;; spelling for a resource someone named a moment ago.
+    "CREATE TABLE IF NOT EXISTS lock_name_seen (
+       holder_kind TEXT    NOT NULL,
+       holder_key  TEXT    NOT NULL,
+       seen_id     INTEGER NOT NULL,
+       PRIMARY KEY (holder_kind, holder_key))")
   "Statements that bring an empty or existing database up to date.
 Schema migrations are handled by `bp/agent-sessions--db-migrate'.")
 
