@@ -16,6 +16,9 @@ code says *what* it does; this file records *why*, so the intent survives edits.
   (see "Locks"). On every session terminal's PATH.
 - `skills/orca/` — the `/orca` skill an agent loads to learn orchestration, and
   the two guides `emacs-agent guide` serves.
+- `skills/emacs-lock/` — the skill that teaches agents to use `emacs-lock`;
+  linked into the Claude and Codex skill directories by
+  `bp/agent-orchestration-install-skill` alongside orca.
 - `orchestration/` — notes on how *Orca* (the app) does the same thing; read
   before redesigning this, not as a description of what is here.
 - Wiring/config is in `../agent-session-config.el`.

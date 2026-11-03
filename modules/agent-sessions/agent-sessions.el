@@ -6106,7 +6106,17 @@ guide', so what is installed is a stub that cannot go stale.  Idempotent."
            (bp/agent-orchestration--link
             (expand-file-name "orca-prompt.md" dir)
             (expand-file-name (format "%s.md" bp/agent-orchestration--skill-name)
-                              bp/agent-orchestration-codex-prompts-dir)))))
+                              bp/agent-orchestration-codex-prompts-dir))))
+         ;; The `emacs-lock' skill rides along: it teaches the same agents
+         ;; the other command this package puts on their PATH.
+         (lock-dir (expand-file-name "skills/emacs-lock" bp/agent-sessions--dir))
+         (results
+          (append results
+                  (mapcar (lambda (skills-dir)
+                            (bp/agent-orchestration--link
+                             lock-dir (expand-file-name "emacs-lock" skills-dir)))
+                          (list bp/agent-orchestration-claude-skills-dir
+                                bp/agent-orchestration-codex-skills-dir)))))
     (unless (file-directory-p dir)
       (error "agent-sessions: missing skill directory %s" dir))
     (unless (server-running-p) (server-start))
