@@ -3892,6 +3892,7 @@ Return nil on the last file.  Point may be inside a file's note."
 
 (defun bp/agent-sessions-kill ()
   "Kill the session at point, detach its shared file or link, or release a lock.
+On an empty folder heading, delete that folder.
 Detaching drops only the dashboard pointer; files on disk and external targets
 are untouched.  Killing a session leaves the locks it holds held, shown as not
 running: a restored session still believes it holds them."
@@ -3899,7 +3900,31 @@ running: a restored session still believes it holds them."
   (cond ((bp/agent-locks--at-point) (bp/agent-locks-release-at-point))
         ((bp/agent-sessions--enclosing-section 'bp/agent-session-lock-wait)
          (message "The agent leaves a queue itself; there is nothing to release."))
+        ((let ((section (magit-current-section)))
+           (and section (eq (oref section type) 'bp/agent-session-folder)))
+         (bp/agent-sessions--delete-empty-folder-at-point))
         (t (bp/agent-sessions--kill-attachment-or-session))))
+
+(defun bp/agent-sessions--delete-empty-folder-at-point ()
+  "Delete the folder whose heading is at point, if it shows no session.
+Emptiness is what the heading's count shows: live sessions.  A folder
+holding sessions is left alone; `F' deletes it after confirmation."
+  (bp/agent-sessions--load-folders)
+  (let* ((section (magit-current-section))
+         (folder (bp/agent-sessions--folder (oref section value))))
+    (cond
+     ((not folder) (message "No folder is a view, not a folder."))
+     ((seq-some (lambda (child)
+                  (eq (oref child type) 'bp/agent-session-row))
+                (oref section children))
+      (message "Folder %s has sessions; use F to delete it."
+               (plist-get folder :name)))
+     (t
+      (let ((ident (bp/agent-sessions--neighbour-ident section)))
+        (bp/agent-sessions--folder-delete folder)
+        (bp/agent-sessions--refresh)
+        (bp/agent-sessions--goto-ident ident)
+        (message "Deleted empty folder %s." (plist-get folder :name)))))))
 
 (defun bp/agent-sessions--kill-attachment-or-session ()
   (pcase (bp/agent-sessions--link-at-point)
