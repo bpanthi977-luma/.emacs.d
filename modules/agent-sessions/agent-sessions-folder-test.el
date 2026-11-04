@@ -142,6 +142,52 @@
         (mapc #'kill-buffer (list terminal dashboard))
         (delete-directory root t)))))
 
+(ert-deftest bp/folders-kill-deletes-only-empty-folders ()
+  (bp/folder-test-with-db
+    (let* ((root (make-temp-file "repo-kill-folder-" t))
+           (repo (bp/agent-sessions--canonical-path root))
+           (terminal (generate-new-buffer " *kill-folder-terminal*"))
+           (dashboard (generate-new-buffer " *kill-folder-dashboard*"))
+           (bp/agent-sessions--states nil)
+           (bp/agent-sessions--notes nil)
+           (bp/agent-sessions--shared-files nil)
+           (bp/agent-sessions--shared-links nil))
+      (unwind-protect
+          (let* ((full (bp/agent-sessions--folder-create "Full" repo))
+                 (empty (bp/agent-sessions--folder-create "Empty" repo))
+                 (session (list :buffer terminal :agent-session-id "kill-folder"
+                                :agent-type "codex" :status 'stopped
+                                :repo "sample-repo" :repo-root root
+                                :worktree "wt (main)" :worktree-name "wt"
+                                :branch "main" :worktree-path root))
+                 (entry (list :id "kill-folder" :session session :title "Task")))
+            (bp/agent-sessions--folder-set session (plist-get full :id))
+            (with-current-buffer dashboard
+              (bp/agent-sessions-mode)
+              (cl-letf (((symbol-function 'bp/agent-sessions--live-entries)
+                         (lambda () (list entry))))
+                (let ((bp/agent-sessions-group-by-folder t))
+                  (bp/agent-sessions--refresh)
+                  (cl-flet ((heading (name)
+                              (goto-char (point-min))
+                              (search-forward (format "  %s (" name))
+                              (beginning-of-line)))
+                    (heading "Full")
+                    (bp/agent-sessions-kill)
+                    (should (bp/agent-sessions--folder (plist-get full :id)))
+                    (should (buffer-live-p terminal))
+                    (heading "No folder")
+                    (bp/agent-sessions-kill)
+                    (heading "Empty")
+                    (bp/agent-sessions-kill)
+                    (should-not (bp/agent-sessions--folder (plist-get empty :id)))
+                    (should-not (string-match-p "Empty (" (buffer-string)))
+                    (should (string-match-p "Full (1)" (buffer-string)))
+                    (should (string-match-p "No folder (0)"
+                                            (buffer-string))))))))
+        (mapc #'kill-buffer (list terminal dashboard))
+        (delete-directory root t)))))
+
 (ert-deftest bp/folders-worktree-column-follows-longest-name ()
   (bp/folder-test-with-db
     (let* ((root (make-temp-file "repo-width-" t))
