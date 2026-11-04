@@ -300,7 +300,10 @@ Manual TAB expansion of an individual section also survives refresh: Magit's
 visibility cache records it, so a hook-driven render must not reapply the
 global Shift+TAB level over those individual choices.
 `F` on a row moves it to a folder in that repo and creates an unmatched name.
-`F` on a folder heading renames or deletes that repo's folder. Folder names may
+`F` on a folder heading renames or deletes that repo's folder. `k` on a folder
+heading deletes it only when it shows no session, so clearing out empty
+folders needs no prompt while a populated one still goes through `F`'s
+confirmation. Folder names may
 repeat in different repos. SQLite schema version 3 migrates the old global
 assignments using the session log's repo root, splitting a global folder when
 its members belong to multiple repos. A legacy assignment with no logged repo
