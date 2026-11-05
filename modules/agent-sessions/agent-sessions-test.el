@@ -1350,6 +1350,29 @@
       (bp/agent-sessions--restore-title buf (list :title "Old task")))
     (should (equal (buffer-name buf) "project_3 - Old task"))))
 
+(ert-deftest bp/agent-sessions-agent-title-renames-buffer ()
+  "An agent's OSC title renames its buffer until the user sets one."
+  (bp/agent-sessions-test--with-titled-terminal buf
+    (let ((bp/agent-sessions (make-hash-table :test 'equal)))
+      (with-current-buffer buf
+        (setq-local bp/agent-session-id "agent-title")
+        ;; A plain shell's title (no agent registered) leaves the name alone.
+        (bp/agent-sessions--set-agent-title "user@host:~")
+        (should (equal (buffer-name buf) "*eat*"))
+        (puthash "agent-title" (list :buffer buf) bp/agent-sessions)
+        (bp/agent-sessions--set-agent-title "Fix login")
+        (should (equal (buffer-name buf) "project_3 - Fix login"))
+        ;; Animated status glyphs don't reach the name.
+        (bp/agent-sessions--set-agent-title "⠏ Fix login")
+        (should (equal (buffer-name buf) "project_3 - Fix login"))
+        (bp/agent-sessions--set-agent-title "✳ Fix login")
+        (should (equal (buffer-name buf) "project_3 - Fix login"))
+        ;; A user title wins over later agent titles.
+        (bp/agent-sessions--set-title-override buf "Mine")
+        (bp/agent-sessions--set-agent-title "Agent again")
+        (should (equal (buffer-name buf) "project_3 - Mine"))
+        (should (equal bp/agent-session-title "Agent again"))))))
+
 (ert-deftest bp/agent-orchestration-worker-title-renames-buffer ()
   (bp/agent-sessions-test--with-titled-terminal buf
     (bp/agent-orchestration--mark-worker buf "coord" (list) "Write tests")
