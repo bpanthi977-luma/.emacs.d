@@ -327,7 +327,27 @@ flag only overrides the status at display time, and is cleared the same way a
 real needs-attention is: by looking at the session.")
 
 (defun bp/agent-sessions--capture-title (title)
-  (setq-local bp/agent-session-title title))
+  (bp/agent-sessions--set-agent-title title))
+
+(defun bp/agent-sessions--set-agent-title (title)
+  "Record TITLE as the current buffer's agent-set (OSC) title.
+In an agent session the user has not titled, the buffer is renamed to follow
+it, as `bp/agent-sessions--set-title-override' does for a user title.  Plain
+shells are left alone: their OSC titles are prompts, not task summaries."
+  (setq-local bp/agent-session-title title)
+  (let ((name (and (stringp title)
+                   ;; Drop the leading status glyph agents animate (Claude's
+                   ;; `✳'/`◐', Codex's braille spinner), or the buffer would be
+                   ;; renamed on every frame.
+                   (string-trim
+                    (replace-regexp-in-string
+                     "\\`[^[:alnum:][:space:]]+[[:space:]]+" "" title)))))
+    (when (and bp/agent-session-id
+               (gethash bp/agent-session-id bp/agent-sessions)
+               (not bp/agent-session-title-override)
+               name
+               (not (string-empty-p name)))
+      (bp/agent-sessions--rename-to-title (current-buffer) name))))
 
 (defun bp/agent-sessions--eat-advice (orig-fun program arg display-fn)
   "Give eat sessions the same id injection/registration as vterm.
@@ -353,7 +373,7 @@ registers the resulting buffer."
 ;; advising the emulator's title setter, which runs with the eat buffer
 ;; current (same idea as the `vterm--set-title' advice above).
 (defun bp/agent-sessions--eat-capture-title (title &rest _)
-  (setq-local bp/agent-session-title title))
+  (bp/agent-sessions--set-agent-title title))
 
 (defun bp/agent-session--clear-attention-on-focus ()
   "Downgrade needs-attention to `stopped' for the session in the selected window.
@@ -4129,12 +4149,19 @@ Clearing leaves the buffer name alone: it has no title to follow."
   (with-current-buffer buf
     (setq-local bp/agent-session-title-override title)
     (when title
-      (let ((wt (bp/agent-sessions--session-worktree-name
-                 (bp/agent-sessions--buffer-repo-info buf))))
-        (rename-buffer (if (member wt '(nil "" "?"))
-                           title
-                         (format "%s - %s" wt title))
-                       t)))))
+      (bp/agent-sessions--rename-to-title buf title))))
+
+(defun bp/agent-sessions--rename-to-title (buf title)
+  "Rename session terminal BUF to `<worktree> - <title>' (TITLE outside a worktree)."
+  (let* ((wt (bp/agent-sessions--session-worktree-name
+              (bp/agent-sessions--buffer-repo-info buf)))
+         (name (if (member wt '(nil "" "?")) title (format "%s - %s" wt title))))
+    (with-current-buffer buf
+      ;; Agents re-send the same title often; a uniquified `NAME<2>' is
+      ;; already right, so don't churn it.
+      (unless (string-match-p (concat "\\`" (regexp-quote name) "\\(<[0-9]+>\\)?\\'")
+                              (buffer-name))
+        (rename-buffer name t)))))
 
 (defun bp/agent-sessions-edit-title ()
   "Edit the title of the session at point.
