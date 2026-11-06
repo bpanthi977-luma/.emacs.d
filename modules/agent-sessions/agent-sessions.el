@@ -38,7 +38,8 @@ Placed on the PATH of every session terminal, so `emacs-share' is simply there
 (defvar bp/agent-sessions--extra-terminal-env nil
   "Extra `VAR=VALUE' strings to inject into the next terminal created.
 Bound around a terminal-creating call.  It exists because the environment is
-assembled by the vterm/eat advice, deep inside those packages' own internals,
+assembled by the vterm/eat advice (ghostel's pre-spawn hook), deep inside those
+packages' own internals,
 so there is no argument to thread through: see `bp/agent-orchestration-spawn',
 the only binder.  A worker learns its role and its coordinator from the
 environment rather than from its launch command because the id it is addressed
@@ -137,11 +138,13 @@ message addressed through an older terminal can find this live replacement.")
 (defconst bp/agent-sessions-buffer-name "*Agent Sessions*")
 
 (defcustom bp/agent-sessions-terminal 'vterm
-  "Terminal emulator backend used for agent sessions.
-Either `vterm' or `eat'.  Only the selected package needs to be installed;
-it is loaded lazily the first time a session terminal is created."
+  "Terminal emulator backend used for new agent session terminals.
+One of `vterm', `eat' or `ghostel'.  Only the selected package needs to be
+installed; it is loaded lazily the first time a session terminal is created.
+Terminals of the other backends opened by hand are still tracked."
   :type '(choice (const :tag "vterm" vterm)
-                 (const :tag "eat" eat)))
+                 (const :tag "eat" eat)
+                 (const :tag "ghostel" ghostel)))
 
 (defcustom bp/agent-sessions-show-all-worktrees nil
   "Legacy option retained for compatibility.
@@ -373,6 +376,29 @@ registers the resulting buffer."
 ;; advising the emulator's title setter, which runs with the eat buffer
 ;; current (same idea as the `vterm--set-title' advice above).
 (defun bp/agent-sessions--eat-capture-title (title &rest _)
+  (bp/agent-sessions--set-agent-title title))
+
+;; ghostel has a pre-spawn hook, run in the new buffer while
+;; `process-environment' is bound to the child's environment, so it needs no
+;; advice for the id injection.  Only plain terminals are sessions: ghostel's
+;; compile, shell-command and eshell buffers spawn through the same hook.
+(defun bp/agent-sessions--ghostel-pre-spawn ()
+  "Give a new ghostel terminal the same id injection/registration as vterm."
+  (when (eq (alist-get 'kind (bound-and-true-p ghostel-identity)) 'term)
+    (let ((id (format "%d-%d" (emacs-pid) (cl-incf bp/agent-session-counter)))
+          (buf (current-buffer)))
+      (setq process-environment
+            (append (bp/agent-sessions--terminal-environment id)
+                    process-environment))
+      (puthash id buf bp/agent-session-id->buffer)
+      (setq-local bp/agent-session-id id)
+      (setq-local bp/agent-session--created-at (current-time))
+      (add-hook 'kill-buffer-hook #'bp/agent-session--cleanup nil t)
+      (bp/agent-sessions--log-open buf)
+      (bp/agent-sessions--refresh-if-visible))))
+
+(defun bp/agent-sessions--ghostel-capture-title (title)
+  "Record TITLE, which ghostel's OSC 0/2 handler just received."
   (bp/agent-sessions--set-agent-title title))
 
 (defun bp/agent-session--clear-attention-on-focus ()
@@ -668,11 +694,23 @@ recompute when the buffer's `default-directory' changes (e.g. after a `cd').")
                    (cons dir (bp/agent-session--repo-info dir))))))))
 
 (defun bp/agent-sessions--buffer-terminal-type (buf)
-  "Return a symbol naming BUF's terminal backend (`vterm', `eat', or `term')."
+  "Return a symbol naming BUF's terminal backend.
+One of `vterm', `eat', `ghostel', or `term' for anything else."
   (pcase (buffer-local-value 'major-mode buf)
     ('vterm-mode 'vterm)
     ('eat-mode 'eat)
+    ('ghostel-mode 'ghostel)
     (_ 'term)))
+
+(defun bp/agent-sessions--terminal-pid (buf)
+  "Return the pid of the shell running in terminal BUF, or nil if none.
+ghostel owns its pty natively: the buffer's Emacs process is only an event
+pipe, with no pid, and the shell's pid is kept in `ghostel--pid'."
+  (let ((proc (get-buffer-process buf)))
+    (and proc (process-live-p proc)
+         (if (eq (bp/agent-sessions--buffer-terminal-type buf) 'ghostel)
+             (buffer-local-value 'ghostel--pid buf)
+           (process-id proc)))))
 
 (defvar-local bp/agent-sessions--foreground-cache nil
   "Cache for `bp/agent-sessions--foreground-command': (TPGID . NAME).")
@@ -705,9 +743,8 @@ wrong side of the trade; `g' already costs ~1.4s, so this is not the expensive
 thing on the path.  What the cache does save is real: reading a *command line*
 is the costly half, and a job that sits there never pays it twice."
   (with-current-buffer buf
-    (let* ((proc (get-buffer-process buf))
-           (attrs (and proc (process-live-p proc)
-                       (ignore-errors (process-attributes (process-id proc)))))
+    (let* ((pid (bp/agent-sessions--terminal-pid buf))
+           (attrs (and pid (ignore-errors (process-attributes pid))))
            (tpgid (cdr (assq 'tpgid attrs)))
            (pgrp (cdr (assq 'pgrp attrs)))
            ;; Non-nil only when some job other than the shell holds the
@@ -917,10 +954,8 @@ Platforms whose `process-attributes' omits `tpgid' make every
 `bp/agent-sessions--foreground-command' call return nil, so there a nil means
 `unknown', not `shell in front' — and `running' must not be demoted on it."
   (and (buffer-live-p buf)
-       (let* ((proc (get-buffer-process buf))
-              (attrs (and proc (process-live-p proc)
-                          (ignore-errors
-                            (process-attributes (process-id proc))))))
+       (let* ((pid (bp/agent-sessions--terminal-pid buf))
+              (attrs (and pid (ignore-errors (process-attributes pid)))))
          (and attrs (assq 'tpgid attrs)))))
 
 (defun bp/agent-sessions--reconcile-status (session buf)
@@ -4325,25 +4360,33 @@ BUFNAME is the desired buffer name.  Loads the backend package lazily."
             (let ((eat-buffer-name bufname))
               ;; arg non-nil, non-number => eat--1 uses `generate-new-buffer'.
               (eat-other-window nil t)))
+      ('ghostel (require 'ghostel)
+                (ghostel-create bufname '(nil (inhibit-same-window . t))))
       (_ (error "Unknown `bp/agent-sessions-terminal': %S"
                 bp/agent-sessions-terminal)))))
 
 (defun bp/agent-sessions--terminal-send (buf string)
   "Send STRING followed by Enter to the terminal in BUF."
+  (bp/agent-orchestration--terminal-input buf string)
+  (bp/agent-sessions--terminal-return buf))
+
+(defun bp/agent-sessions--terminal-return (buf)
+  "Press Enter in the terminal in BUF."
   (with-current-buffer buf
-    (pcase bp/agent-sessions-terminal
-      ('vterm (vterm-send-string string) (vterm-send-return))
-      ('eat (eat-term-send-string eat-terminal string)
-            (eat-term-send-string eat-terminal "\r")))))
+    (pcase (bp/agent-sessions--buffer-terminal-type buf)
+      ('vterm (vterm-send-return))
+      ('eat (eat-term-send-string eat-terminal "\r"))
+      ('ghostel (ghostel-send-key "return"))
+      (_ (user-error "%s is not a vterm, eat or ghostel terminal" buf)))))
 
 (defun bp/agent-sessions--terminal-paste (buf string)
   "Bracket-paste STRING into the terminal in BUF without submitting it."
   (with-current-buffer buf
-    (cond
-     ((derived-mode-p 'vterm-mode) (vterm-send-string string t))
-     ((derived-mode-p 'eat-mode)
-      (eat-term-send-string-as-yank eat-terminal string))
-     (t (user-error "Current buffer is not an Eat or vterm terminal")))))
+    (pcase (bp/agent-sessions--buffer-terminal-type buf)
+      ('vterm (vterm-send-string string t))
+      ('eat (eat-term-send-string-as-yank eat-terminal string))
+      ('ghostel (ghostel-paste-string string))
+      (_ (user-error "%s is not a vterm, eat or ghostel terminal" buf)))))
 
 (defun bp/agent-session-insert-org-link ()
   "Prompt for an Org link and paste it into the current terminal input."
@@ -5609,6 +5652,44 @@ human draft deliberately does not match."
                 (bp/agent-orchestration--face-inherits-p item parent))
               face))))
 
+(defun bp/agent-orchestration--ghostel-dim (fg bg)
+  "The `#rrggbb' color ghostel renders faint FG text in on BG.
+Mirrors `dimColor' in ghostel's src/style_face.zig: each channel is
+\(FG*166 + BG*90) / 256, in integer arithmetic."
+  (let ((rgb (lambda (hex)
+               (mapcar (lambda (i) (string-to-number (substring hex i (+ i 2)) 16))
+                       '(1 3 5)))))
+    (apply #'format "#%02x%02x%02x"
+           (cl-mapcar (lambda (f b) (/ (+ (* f 166) (* b 90)) 256))
+                      (funcall rgb fg) (funcall rgb bg)))))
+
+(defun bp/agent-orchestration--ghostel-faint-p (face)
+  "Non-nil when FACE is how ghostel renders faint text in the default color.
+ghostel has no faint face: its native renderer bakes faint into the run's
+`:foreground', blending the text color into the background (see
+`bp/agent-orchestration--ghostel-dim').  Claude draws its suggestion faint in
+the default color, so that run's foreground is exactly the blend of the
+`ghostel-default' foreground and the run's background.  Anything else,
+including faint text in another color, counts as typed: the safe direction,
+which keeps mail waiting rather than pasting over a draft."
+  (and (listp face) (keywordp (car face))
+       (fboundp 'ghostel--face-hex-color)
+       (let ((fg (plist-get face :foreground)))
+         (and (stringp fg)
+              (string-match-p "\\`#[[:xdigit:]]\\{6\\}\\'" fg)
+              (equal (downcase fg)
+                     (bp/agent-orchestration--ghostel-dim
+                      (ghostel--face-hex-color 'ghostel-default :foreground)
+                      (or (plist-get face :background)
+                          (ghostel--face-hex-color 'ghostel-default
+                                                   :background))))))))
+
+(defun bp/agent-orchestration--faint-p (face)
+  "Non-nil when FACE renders the terminal's ANSI faint attribute.
+eat keeps faint as the `eat-term-faint' face; ghostel only as a dimmed color."
+  (or (bp/agent-orchestration--face-inherits-p face 'eat-term-faint)
+      (bp/agent-orchestration--ghostel-faint-p face)))
+
 (defun bp/agent-orchestration--claude-ghost-completion-p (text)
   "Non-nil when every non-whitespace character in TEXT is Claude ghost text.
 Claude renders its Tab completion with the terminal's ANSI faint face.  A
@@ -5623,11 +5704,10 @@ a real draft rather than becoming eligible for mail delivery."
              (chunk (substring-no-properties text pos next)))
         (unless (string-match-p "\\`[[:space:]\u00a0]*\\'" chunk)
           (setq saw-text t)
-          (unless (or (bp/agent-orchestration--face-inherits-p
-                       (get-text-property pos 'face text) 'eat-term-faint)
-                      (bp/agent-orchestration--face-inherits-p
-                       (get-text-property pos 'font-lock-face text)
-                       'eat-term-faint))
+          (unless (or (bp/agent-orchestration--faint-p
+                       (get-text-property pos 'face text))
+                      (bp/agent-orchestration--faint-p
+                       (get-text-property pos 'font-lock-face text)))
             (setq all-faint nil)))
         (setq pos next)))
     (and saw-text all-faint)))
@@ -5677,10 +5757,11 @@ live human draft and left untouched."
 (defun bp/agent-orchestration--terminal-input (buf string)
   "Send raw terminal input STRING to BUF without paste handling or Enter."
   (with-current-buffer buf
-    (cond
-     ((derived-mode-p 'vterm-mode) (vterm-send-string string))
-     ((derived-mode-p 'eat-mode) (eat-term-send-string eat-terminal string))
-     (t (user-error "Current buffer is not an Eat or vterm terminal")))))
+    (pcase (bp/agent-sessions--buffer-terminal-type buf)
+      ('vterm (vterm-send-string string))
+      ('eat (eat-term-send-string eat-terminal string))
+      ('ghostel (ghostel-send-string string))
+      (_ (user-error "%s is not a vterm, eat or ghostel terminal" buf)))))
 
 (defun bp/agent-orchestration--call-with-timeout (program args timeout)
   "Run PROGRAM with ARGS, returning its exit status within TIMEOUT seconds.
@@ -5781,10 +5862,7 @@ feed it the rest as separate prompts."
    bp/agent-orchestration--submit-delay nil
    (lambda (target)
      (when (buffer-live-p target)
-       (with-current-buffer target
-         (pcase bp/agent-sessions-terminal
-           ('vterm (vterm-send-return))
-           ('eat (eat-term-send-string eat-terminal "\r"))))))
+       (bp/agent-sessions--terminal-return target)))
    buf))
 
 ;;; Sending selected text to an agent
@@ -6708,8 +6786,8 @@ process is the stand-in: it lives at least as long as the agent in it."
                                              (plist-get lock :name)))
                                       bp/agent-locks--held)))
                  (buf (and names (gethash id bp/agent-session-id->buffer)))
-                 (proc (and (buffer-live-p buf) (get-buffer-process buf)))
-                 (pid (and proc (process-id proc)))
+                 (pid (and (buffer-live-p buf)
+                           (bp/agent-sessions--terminal-pid buf)))
                  (start (and pid (bp/agent-locks--pid-start pid))))
             (when start
               (let ((db (bp/agent-sessions--db)))
@@ -7210,7 +7288,8 @@ scripts on disk.  Safe to run whether or not `bp/agent-sessions-install' ran."
 ;;;###autoload
 (defun bp/agent-session-setup ()
   "Install all side effects this package makes on systems outside itself.
-Namely: the vterm/eat advice (session-id injection + terminal-title capture),
+Namely: the vterm/eat/ghostel hooks and advice (session-id injection +
+terminal-title capture),
 the focus hook that clears the needs-attention highlight, the `agent-session'
 Org link type, the `C-x p a' project binding, and starting the Emacs server
 \(hook scripts reach us via emacsclient).  Idempotent; call from init/config."
@@ -7226,6 +7305,13 @@ Org link type, the `C-x p a' project binding, and starting the Emacs server
       (advice-add 'eat--1 :around #'bp/agent-sessions--eat-advice))
     (unless (advice-member-p #'bp/agent-sessions--eat-capture-title 'eat--t-set-title)
       (advice-add 'eat--t-set-title :after #'bp/agent-sessions--eat-capture-title)))
+  ;; ghostel: the id injection has a hook; the title capture still needs advice.
+  (with-eval-after-load 'ghostel
+    (add-hook 'ghostel-pre-spawn-hook #'bp/agent-sessions--ghostel-pre-spawn)
+    (unless (advice-member-p #'bp/agent-sessions--ghostel-capture-title
+                             'ghostel--set-title)
+      (advice-add 'ghostel--set-title :after
+                  #'bp/agent-sessions--ghostel-capture-title)))
   ;; Clear a session's needs-attention highlight once the user focuses it.
   (add-hook 'buffer-list-update-hook #'bp/agent-session--clear-attention-on-focus)
   ;; Record that sessions still running at exit were *not* closed by the user.
