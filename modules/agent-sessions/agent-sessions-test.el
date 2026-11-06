@@ -1373,6 +1373,24 @@
         (should (equal (buffer-name buf) "project_3 - Mine"))
         (should (equal bp/agent-session-title "Agent again"))))))
 
+(ert-deftest bp/agent-sessions-terminal-id-for-agent ()
+  "A Codex thread id finds its own terminal, whatever id the daemon carries."
+  (let ((bp/agent-sessions (make-hash-table :test 'equal))
+        (live (generate-new-buffer "*live*"))
+        (dead (generate-new-buffer "*dead*")))
+    (unwind-protect
+        (progn
+          (puthash "1-73" (list :agent-session-id "thread-a" :buffer live)
+                   bp/agent-sessions)
+          (puthash "1-23" (list :agent-session-id "thread-b" :buffer dead)
+                   bp/agent-sessions)
+          (kill-buffer dead)
+          (should (equal (bp/agent-sessions-terminal-id-for-agent "thread-a")
+                         "1-73"))
+          (should (equal (bp/agent-sessions-terminal-id-for-agent "thread-b") ""))
+          (should (equal (bp/agent-sessions-terminal-id-for-agent "nope") "")))
+      (kill-buffer live))))
+
 (ert-deftest bp/agent-orchestration-worker-title-renames-buffer ()
   (bp/agent-sessions-test--with-titled-terminal buf
     (bp/agent-orchestration--mark-worker buf "coord" (list) "Write tests")
