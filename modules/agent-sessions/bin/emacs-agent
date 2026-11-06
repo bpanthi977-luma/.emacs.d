@@ -33,9 +33,20 @@ usage() {
 die() { echo "emacs-agent: $1" >&2; exit 1; }
 
 need_session() {
+  command -v emacsclient >/dev/null 2>&1 || die "emacsclient not found"
+  # Codex runs tool commands in a shared app-server daemon, whose environment
+  # holds the EMACS_AGENT_SESSION_ID of whichever terminal started it.  The
+  # thread id is this session's own, so find its terminal from that.  An
+  # unknown thread fails rather than falling back: the stale id may name
+  # another live terminal, and mail sent as it would go astray.
+  agent_session_id=${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-}}
+  if [ -n "$agent_session_id" ]; then
+    EMACS_AGENT_SESSION_ID=$(call "(bp/agent-sessions-terminal-id-for-agent \"$(esc "$agent_session_id")\")")
+    [ -n "$EMACS_AGENT_SESSION_ID" ] ||
+      die "no Emacs agent session registered for agent id $agent_session_id"
+  fi
   [ -n "${EMACS_AGENT_SESSION_ID:-}" ] ||
     die "not inside an Emacs agent session terminal (no EMACS_AGENT_SESSION_ID)"
-  command -v emacsclient >/dev/null 2>&1 || die "emacsclient not found"
 }
 
 # Escape a value for interpolation into an elisp string literal.

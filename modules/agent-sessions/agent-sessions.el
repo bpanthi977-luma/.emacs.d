@@ -780,6 +780,23 @@ terminal's environment."
      bp/agent-sessions)
     nil))
 
+(defun bp/agent-sessions-terminal-id-for-agent (agent-session-id)
+  "Return the terminal id of the live session whose durable id is AGENT-SESSION-ID.
+Returns \"\" when no live session has that id.  `emacs-agent' calls this over
+emacsclient to find its own terminal: Codex runs tool commands in a shared
+app-server daemon whose environment holds the EMACS_AGENT_SESSION_ID of the
+terminal that started it, not of the session issuing the command."
+  (or (catch 'found
+        (maphash
+         (lambda (id session)
+           (when (and (equal agent-session-id
+                             (plist-get session :agent-session-id))
+                      (buffer-live-p (plist-get session :buffer)))
+             (throw 'found id)))
+         bp/agent-sessions)
+        nil)
+      ""))
+
 (defun bp/agent-sessions--session-for-share (terminal-id agent-session-id)
   "Resolve a share command's TERMINAL-ID and AGENT-SESSION-ID.
 Prefer a supplied durable agent identity.  If it is unknown, return nil rather
