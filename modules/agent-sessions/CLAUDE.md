@@ -38,9 +38,18 @@ untouched.
 **Zero-friction tracking beats an explicit launcher.** Rather than a wrapper
 command you must remember to use, every terminal buffer gets a unique id
 injected into its shell env, so *any* `claude`/`codex` you type in *any*
-eat/vterm is tracked automatically. The cost is that we advise the terminal
-packages' internals — accepted deliberately in exchange for never having to
-think about launching sessions specially.
+eat/vterm/ghostel is tracked automatically. The cost is that we advise the
+terminal packages' internals — accepted deliberately in exchange for never
+having to think about launching sessions specially.
+
+ghostel needs the least of that: its `ghostel-pre-spawn-hook` runs in the new
+buffer with `process-environment` bound, so the id is injected there, and only
+the title setter is advised. That hook also fires for ghostel's compile,
+shell-command and eshell buffers, so only identities of kind `term` (plain and
+project terminals) become sessions. ghostel owns its pty natively: the
+buffer's process is an event pipe with no pid, and the shell's pid lives in
+`ghostel--pid`. Anything that inspects the shell goes through
+`bp/agent-sessions--terminal-pid`, never `process-id` directly.
 
 **The per-buffer id is the identity, not the agent's own session id.** Sessions
 sharing a worktree must still resolve to the right buffer, and the agent's own
@@ -520,6 +529,15 @@ the terminal's ANSI faint attribute; Eat preserves it as `eat-term-faint`.
 Agent-sessions therefore treats a composer whose entire non-whitespace body is
 faint as empty. A typed prefix is non-faint, so mixed typed-plus-suggested text
 continues to block delivery.
+ghostel has no faint face: its native renderer bakes faint into the run's
+`:foreground`, blending the text color into the background as
+`(fg*166 + bg*90)/256` per channel (`dimColor` in its `src/style_face.zig`).
+Claude's suggestion is faint in the default color, so a run whose foreground is
+exactly that blend of the `ghostel-default` foreground and the run's background
+counts as faint too. This is not just a nicety. Claude keeps a suggestion on
+screen until the human acts, and an idle Claude fires no hook to retry
+delivery, so without the check mail to an idle Claude waited for the human.
+If ghostel changes its blend, the check fails safe: suggestions read as drafts.
 
 Claude does not always clear submitted text from the rendered composer before
 the hook callback tries delivery; it can retain that text through the turn or
