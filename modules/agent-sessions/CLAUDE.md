@@ -365,6 +365,12 @@ per-refresh work off the git path.
 block until it reports. Its verbs are spawn, send, send-and-wait, done, ask,
 check, wait, list, and worktrees. It reaches Emacs the way `emacs-share`
 does, and returns its failures as the printed value for the same reason.
+Like `emacs-share`, it identifies a Codex caller by `CODEX_THREAD_ID`, not
+`EMACS_AGENT_SESSION_ID`. Codex runs tool commands in its shared app-server
+daemon, whose environment carries the id of whichever terminal started it, so
+every Codex session would otherwise send and read mail as that one (often
+long-dead) terminal. An unregistered thread id is an error, never a fallback to
+the stale terminal id.
 
 **Emacs owns only what an agent cannot do for itself.** There are no task rows,
 no dependency graph and no scheduler, and adding them is the obvious wrong turn.
