@@ -131,7 +131,7 @@ Intended as :around advice for `eat--adjust-process-window-size'."
   :defer nil
   :config
   (setf bp/agent-sessions-show-all-worktrees t)
-  (setf bp/agent-sessions-terminal 'eat)
+  (setf bp/agent-sessions-terminal 'ghostel)
   ;; The region command has already put the sharing agent first and the rest
   ;; in view-recency order; keep Ivy from replacing that with alphabetic order.
   (with-eval-after-load 'ivy
@@ -145,6 +145,15 @@ Intended as :around advice for `eat--adjust-process-window-size'."
     (unless (member "M-m" vterm-keymap-exceptions)
       (setopt vterm-keymap-exceptions (cons "M-m" vterm-keymap-exceptions)))
     (define-key vterm-mode-map (kbd "C-c C-l")
+                #'bp/agent-session-insert-org-link))
+
+  ;; Same for ghostel: `ghostel-keymap-exceptions' keys pass through to Emacs;
+  ;; its :set rebuilds the semi-char keymap, so use setopt.  `C-c C-l' is
+  ;; ghostel's `ghostel-line-mode'; the org link wins here, as in vterm and eat.
+  (with-eval-after-load 'ghostel
+    (unless (member "M-m" ghostel-keymap-exceptions)
+      (setopt ghostel-keymap-exceptions (cons "M-m" ghostel-keymap-exceptions)))
+    (define-key ghostel-mode-map (kbd "C-c C-l")
                 #'bp/agent-session-insert-org-link))
 
   ;; Same for eat: keys in `eat-semi-char-non-bound-keys' are NOT sent to the
