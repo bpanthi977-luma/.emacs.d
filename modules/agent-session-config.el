@@ -156,6 +156,10 @@ Intended as :around advice for `eat--adjust-process-window-size'."
     (define-key ghostel-mode-map (kbd "C-c C-l")
                 #'bp/agent-session-insert-org-link))
 
+  ;; agent-sessions already notifies when an agent needs attention; ghostel's
+  ;; own status/OSC 9 notifications would announce the same turn a second time.
+  (setq ghostel-notification-functions nil)
+
   ;; Same for eat: keys in `eat-semi-char-non-bound-keys' are NOT sent to the
   ;; terminal in semi-char mode, so they fall through to Emacs.  eat spells
   ;; M-KEY as [?\e KEY]; its :set rebuilds the keymap, so use setopt.
