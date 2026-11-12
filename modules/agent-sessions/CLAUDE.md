@@ -757,8 +757,10 @@ working while new instructions use the unified command.
 **A PR link shows GitHub's state, fetched by the dashboard and never stored.**
 A session with exactly one PR link gets two glyphs after its STATE column
 (lifecycle: `◌` draft, `○` open, `◔` checks running or, red, failed, `◕` in
-merge queue, `◉` merged, `⊘` closed; then review: `✓` approved, `✗` changes
-requested), and every PR link row ends with the same state in words. With
+merge queue, `◉` merged, `⊘` closed; then review: `◇` reviewer assigned,
+leading to `✓` approved or `✗` changes requested), and every PR link row ends
+with the same state in words. A review decision outranks pending requests:
+GitHub keeps listing a reviewer who was asked after someone else approved. With
 several PRs no single one speaks for the session, so its row shows none and
 the column has no width when no session qualifies, like the lock column.
 
