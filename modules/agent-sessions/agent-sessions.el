@@ -3435,6 +3435,9 @@ that end by themselves, usually within minutes."
   "Face for a merged PR.")
 (defface bp/agent-session-pr-closed '((t :foreground "#f05050" :weight bold))
   "Face for a PR closed without merging.")
+(defface bp/agent-session-pr-review-requested
+  '((t :foreground "#7aa2f7" :weight bold))
+  "Face for a PR waiting on a reviewer who has been assigned.")
 (defface bp/agent-session-pr-approved '((t :foreground "#86dc2f" :weight bold))
   "Face for an approved PR's review mark.")
 (defface bp/agent-session-pr-changes-requested
@@ -3458,9 +3461,12 @@ The circle fills as a PR moves forward; checks failing keeps the checks glyph
 and turns it red.")
 
 (defconst bp/agent-sessions--pr-review-display
-  '((approved          "✓" "approved"          bp/agent-session-pr-approved)
+  '((requested         "◇" "reviewer assigned" bp/agent-session-pr-review-requested)
+    (approved          "✓" "approved"          bp/agent-session-pr-approved)
     (changes-requested "✗" "changes requested" bp/agent-session-pr-changes-requested))
-  "Review decision -> (GLYPH WORDS FACE).  No decision shows nothing.")
+  "Review state -> (GLYPH WORDS FACE).
+A reviewer being assigned leads to approved or changes requested; a PR with no
+reviewer and no decision shows nothing.")
 
 (defconst bp/agent-sessions--pr-marks-width 5
   "Width of the PR glyph column: lifecycle, space, review, then two spaces.")
@@ -3528,9 +3534,16 @@ checks even while the queue runs more."
                            ((member checks '("PENDING" "EXPECTED")) 'checks)
                            ((member checks '("FAILURE" "ERROR")) 'failed)
                            (t 'open))))
+          ;; A decision outranks pending requests: GitHub keeps listing a
+          ;; reviewer who was asked after someone else already approved.
           :review (pcase (plist-get node :reviewDecision)
                     ("APPROVED" 'approved)
-                    ("CHANGES_REQUESTED" 'changes-requested)))))
+                    ("CHANGES_REQUESTED" 'changes-requested)
+                    (_ (and (> (or (plist-get (plist-get node :reviewRequests)
+                                              :totalCount)
+                                   0)
+                               0)
+                            'requested))))))
 
 (defun bp/agent-sessions--pr-query (urls)
   "A GraphQL query for every PR in URLS, aliased p0, p1, … in order."
@@ -3541,7 +3554,7 @@ checks even while the queue runs more."
       (lambda (url)
         (pcase-let ((`(,owner ,repo ,number)
                      (bp/agent-sessions--pr-url-parts url)))
-          (format "p%d:repository(owner:\"%s\",name:\"%s\"){pullRequest(number:%d){isDraft state reviewDecision isInMergeQueue commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}"
+          (format "p%d:repository(owner:\"%s\",name:\"%s\"){pullRequest(number:%d){isDraft state reviewDecision reviewRequests(first:0){totalCount} isInMergeQueue commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}"
                   (setq i (1+ i)) owner repo number)))
       urls " ")
      "}")))
