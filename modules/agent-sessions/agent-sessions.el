@@ -3402,9 +3402,20 @@ not make them learn two highlights for it.")
 ;; dashboard buffer does.  The render path never starts a process; it records
 ;; which PRs it drew and arms the timers.
 
-(defcustom bp/agent-sessions-pr-poll-interval 30
-  "Seconds between refreshes of the GitHub state of the dashboard's PRs."
+(defcustom bp/agent-sessions-pr-poll-interval 180
+  "Seconds between refreshes of PR state while every PR is settled.
+Settled means nothing is about to change on its own: open with checks done,
+draft, or failed to fetch.  See `bp/agent-sessions-pr-poll-interval-active'."
   :type 'integer)
+
+(defcustom bp/agent-sessions-pr-poll-interval-active 20
+  "Seconds between refreshes of PR state while any PR is in motion.
+In motion means its checks are running or it is in the merge queue: states
+that end by themselves, usually within minutes."
+  :type 'integer)
+
+(defconst bp/agent-sessions--pr-active-lives '(checks queue)
+  "Lifecycle states that change without anyone acting, so are polled faster.")
 
 (defcustom bp/agent-sessions-pr-fetch-timeout 30
   "Seconds before a GitHub request for PR state is abandoned."
@@ -3466,7 +3477,7 @@ request rebuilds it.  A URL with no entry has not been fetched yet.")
   "The `gh' process fetching PR state, or nil.  At most one runs at a time.")
 
 (defvar bp/agent-sessions--pr-poll-timer nil
-  "Repeating timer refreshing PR state while the dashboard exists.")
+  "One-shot timer for the next PR state refresh, re-armed after each fetch.")
 
 (defvar bp/agent-sessions--pr-kick-timer nil
   "One-shot timer fetching PRs a render drew but GitHub has not been asked about.")
@@ -3612,6 +3623,9 @@ lexically bound, so a sentinel cannot close over them."
         (bp/agent-sessions--pr-apply-response urls response)
       (bp/agent-sessions--pr-record-failure
        urls (bp/agent-sessions--pr-failure-message proc stderr)))
+    ;; Before the redraw, so the next poll is timed by the states just learned
+    ;; rather than by whichever timer was armed before them.
+    (bp/agent-sessions--pr-schedule-poll)
     (bp/agent-sessions--refresh-if-visible)))
 
 (defun bp/agent-sessions--pr-fetch (&optional force)
@@ -3653,12 +3667,40 @@ nothing while an earlier request is still running."
         (run-with-timer bp/agent-sessions-pr-fetch-timeout nil
                         #'bp/agent-sessions--pr-timeout proc))))))
 
-(defun bp/agent-sessions--pr-poll ()
-  "Refresh PR state while the dashboard exists; stop polling once it is gone."
-  (if (get-buffer bp/agent-sessions-buffer-name)
-      (bp/agent-sessions--pr-fetch)
+(defun bp/agent-sessions--pr-poll-delay ()
+  "Seconds until the next PR refresh, given what is known of the PRs shown.
+Short while any PR is in motion, long while all are settled."
+  (if (seq-some (lambda (url)
+                  (memq (plist-get (gethash url bp/agent-sessions--pr-states)
+                                   :life)
+                        bp/agent-sessions--pr-active-lives))
+                bp/agent-sessions--pr-urls)
+      bp/agent-sessions-pr-poll-interval-active
+    bp/agent-sessions-pr-poll-interval))
+
+(defun bp/agent-sessions--pr-schedule-poll ()
+  "Arm the next PR refresh, replacing any armed one.
+Nothing is armed while the dashboard is gone or shows no PR; the next render
+that draws one arms it again."
+  (when bp/agent-sessions--pr-poll-timer
     (cancel-timer bp/agent-sessions--pr-poll-timer)
-    (setq bp/agent-sessions--pr-poll-timer nil)))
+    (setq bp/agent-sessions--pr-poll-timer nil))
+  (when (and bp/agent-sessions--pr-urls
+             (get-buffer bp/agent-sessions-buffer-name))
+    (setq bp/agent-sessions--pr-poll-timer
+          (run-with-timer (bp/agent-sessions--pr-poll-delay) nil
+                          #'bp/agent-sessions--pr-poll))))
+
+(defun bp/agent-sessions--pr-poll ()
+  "Refresh PR state; the fetch's completion arms the next poll.
+When no fetch starts (nothing to ask about, or one still running), the next
+poll is armed here instead, so the chain never silently ends while the
+dashboard shows PRs."
+  (setq bp/agent-sessions--pr-poll-timer nil)
+  (when (get-buffer bp/agent-sessions-buffer-name)
+    (bp/agent-sessions--pr-fetch)
+    (unless (process-live-p bp/agent-sessions--pr-process)
+      (bp/agent-sessions--pr-schedule-poll))))
 
 (defun bp/agent-sessions--pr-note-shown (urls)
   "Record URLS as the PRs on the dashboard and see that they get fetched.
@@ -3668,11 +3710,10 @@ wait a whole poll interval.  A fetch redraws, and that redraw re-arms the
 fetch for any URL that arrived while one was running."
   (setq bp/agent-sessions--pr-urls urls)
   (when urls
-    (unless bp/agent-sessions--pr-poll-timer
-      (setq bp/agent-sessions--pr-poll-timer
-            (run-with-timer bp/agent-sessions-pr-poll-interval
-                            bp/agent-sessions-pr-poll-interval
-                            #'bp/agent-sessions--pr-poll)))
+    ;; A running fetch arms the next poll when it finishes.
+    (unless (or bp/agent-sessions--pr-poll-timer
+                (process-live-p bp/agent-sessions--pr-process))
+      (bp/agent-sessions--pr-schedule-poll))
     (when (and (not bp/agent-sessions--pr-kick-timer)
                (not (process-live-p bp/agent-sessions--pr-process))
                (seq-some (lambda (url)
