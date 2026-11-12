@@ -764,14 +764,27 @@ the column has no width when no session qualifies, like the lock column.
 
 - **In memory only.** GitHub is the source of truth and one request rebuilds
   the table, so it fails the persistence bar above; a restart refetches.
-- **The dashboard polls, not the agents.** The render records the PR URLs it
-  drew and only arms timers: a repeating poll
-  (`bp/agent-sessions-pr-poll-interval`) that cancels itself once the
-  dashboard buffer is gone, and a near-immediate one-shot for a URL never
-  asked about, so a freshly shared PR does not wait a whole interval. The
-  render path starting a process would put the network on the hot path the
-  git note warns about. `g` forces a refetch, merged and closed PRs included;
-  otherwise those are fetched once, since they cannot change.
+- **The dashboard polls, not the agents, and only because GitHub cannot
+  push.** A change notification needs a repo webhook (admin rights, plus a
+  local forwarder that can miss events while Emacs is closed); the
+  notifications API is itself polling and does not report checks or the merge
+  queue. The render records the PR URLs it drew and only arms timers: the
+  poll, and a near-immediate one-shot for a URL never asked about, so a
+  freshly shared PR does not wait a whole interval. The render path starting a
+  process would put the network on the hot path the git note warns about. `g`
+  forces a refetch, merged and closed PRs included; otherwise those are
+  fetched once, since they cannot change.
+- **The poll is adaptive: fast while a PR is in motion, slow while all are
+  settled.** Checks running and the merge queue end by themselves, usually
+  within minutes, so while any PR shown is in one of those states the next
+  poll is `bp/agent-sessions-pr-poll-interval-active` (20s) away; otherwise
+  `bp/agent-sessions-pr-poll-interval` (180s). Settled includes a failed
+  fetch, so an auth or network failure is retried slowly rather than hammered.
+  The poll is therefore a one-shot timer re-armed by each fetch's completion,
+  timed by the states that fetch just learned; a repeating timer would keep
+  the interval it was born with. A poll that starts no fetch (nothing to ask
+  about, or one still running) re-arms itself, and none is armed once the
+  dashboard is gone; the next render showing a PR starts the chain again.
 - **One `gh api graphql` request for all of them, one at a time.** `gh pr
   view --json` has no merge-queue field, which is why it is GraphQL. Each PR
   is an alias (`p0`, `p1`, …), and a tick that finds a request still running
