@@ -323,24 +323,112 @@
       (should (equal '(:error "gh not found")
                      (gethash url bp/agent-sessions--pr-states))))))
 
+(defmacro bp/agent-sessions-pr-test--with-dashboard (&rest body)
+  "Run BODY while a buffer stands in for the dashboard."
+  (declare (indent 0) (debug t))
+  `(with-temp-buffer
+     (let ((bp/agent-sessions-buffer-name (buffer-name)))
+       ,@body)))
+
 (ert-deftest bp/agent-sessions-pr-note-shown-arms-timers-only ()
   (bp/agent-sessions-pr-test--isolated
-    (let (timers)
+    (bp/agent-sessions-pr-test--with-dashboard
+      (let ((bp/agent-sessions-pr-poll-interval 180)
+            timers)
+        (cl-letf (((symbol-function 'run-with-timer)
+                   (lambda (secs repeat fn &rest _)
+                     (push (list secs repeat fn) timers)
+                     (list 'timer secs)))
+                  ((symbol-function 'make-process)
+                   (lambda (&rest _)
+                     (error "The render must not start a process"))))
+          (bp/agent-sessions--pr-note-shown nil)
+          (should-not timers)
+          (bp/agent-sessions--pr-note-shown '("https://github.com/a/b/pull/1"))
+          ;; The poll, one-shot, and a near-immediate fetch for the new PR.
+          (should (equal '((0.5 nil) (180 nil))
+                         (mapcar #'butlast timers)))
+          (setq timers nil)
+          (bp/agent-sessions--pr-note-shown '("https://github.com/a/b/pull/1"))
+          ;; Both already armed.
+          (should-not timers))))))
+
+(ert-deftest bp/agent-sessions-pr-poll-delay-follows-motion ()
+  (bp/agent-sessions-pr-test--isolated
+    (let ((bp/agent-sessions-pr-poll-interval 180)
+          (bp/agent-sessions-pr-poll-interval-active 20)
+          (a "https://github.com/a/b/pull/1")
+          (b "https://github.com/a/b/pull/2"))
+      (setq bp/agent-sessions--pr-urls (list a b))
+      ;; Nothing known yet: the first fetch is the kick's job, not the poll's.
+      (should (= 180 (bp/agent-sessions--pr-poll-delay)))
+      (puthash a '(:life open :review approved) bp/agent-sessions--pr-states)
+      (puthash b '(:error "Bad credentials") bp/agent-sessions--pr-states)
+      (should (= 180 (bp/agent-sessions--pr-poll-delay)))
+      (dolist (life '(checks queue))
+        (puthash b (list :life life :review nil) bp/agent-sessions--pr-states)
+        (should (= 20 (bp/agent-sessions--pr-poll-delay))))
+      (dolist (life '(failed draft merged))
+        (puthash b (list :life life :review nil) bp/agent-sessions--pr-states)
+        (should (= 180 (bp/agent-sessions--pr-poll-delay))))
+      ;; A PR in motion that is no longer on the dashboard does not count.
+      (puthash b '(:life checks :review nil) bp/agent-sessions--pr-states)
+      (setq bp/agent-sessions--pr-urls (list a))
+      (should (= 180 (bp/agent-sessions--pr-poll-delay))))))
+
+(ert-deftest bp/agent-sessions-pr-poll-rearms-when-no-fetch-starts ()
+  (bp/agent-sessions-pr-test--isolated
+    (bp/agent-sessions-pr-test--with-dashboard
+      (let ((bp/agent-sessions-pr-poll-interval 180)
+            (url "https://github.com/a/b/pull/1")
+            timers)
+        (puthash url '(:life merged :review nil) bp/agent-sessions--pr-states)
+        (setq bp/agent-sessions--pr-urls (list url))
+        (cl-letf (((symbol-function 'run-with-timer)
+                   (lambda (secs &rest _) (push secs timers) (list 'timer secs)))
+                  ((symbol-function 'cancel-timer) #'ignore))
+          ;; Only a merged PR: no fetch starts, so the poll re-arms itself.
+          (bp/agent-sessions--pr-poll)
+          (should (equal '(180) timers))
+          (should bp/agent-sessions--pr-poll-timer))))))
+
+(ert-deftest bp/agent-sessions-pr-poll-stops-without-a-dashboard ()
+  (bp/agent-sessions-pr-test--isolated
+    (let ((bp/agent-sessions-buffer-name " *no such dashboard*")
+          started)
+      (setq bp/agent-sessions--pr-urls '("https://github.com/a/b/pull/1"))
       (cl-letf (((symbol-function 'run-with-timer)
-                 (lambda (secs repeat fn) (push (list secs repeat fn) timers)
-                   (list 'timer secs)))
+                 (lambda (&rest _) (setq started t)))
                 ((symbol-function 'make-process)
-                 (lambda (&rest _) (error "The render must not start a process"))))
-        (bp/agent-sessions--pr-note-shown nil)
-        (should-not timers)
-        (bp/agent-sessions--pr-note-shown '("https://github.com/a/b/pull/1"))
-        ;; The poll, and a near-immediate fetch for the never-fetched PR.
-        (should (= 2 (length timers)))
-        (should (equal '(0.5 nil) (butlast (car timers))))
-        (setq timers nil)
-        (bp/agent-sessions--pr-note-shown '("https://github.com/a/b/pull/1"))
-        ;; Both already armed.
-        (should-not timers)))))
+                 (lambda (&rest _) (setq started t))))
+        (bp/agent-sessions--pr-poll)
+        (should-not started)
+        (should-not bp/agent-sessions--pr-poll-timer)))))
+
+(ert-deftest bp/agent-sessions-pr-finish-times-next-poll-by-new-state ()
+  (bp/agent-sessions-pr-test--isolated
+    (bp/agent-sessions-pr-test--with-dashboard
+      (let* ((bp/agent-sessions-pr-poll-interval 180)
+             (bp/agent-sessions-pr-poll-interval-active 20)
+             (url "https://github.com/a/b/pull/1")
+             (gh (bp/agent-sessions-pr-test--fake-gh
+                  (concat "{\"data\":{\"p0\":{\"pullRequest\":{\"isDraft\":false,"
+                          "\"state\":\"OPEN\",\"reviewDecision\":null,"
+                          "\"isInMergeQueue\":true,\"commits\":{\"nodes\":[]}}}}}")
+                  "" 0))
+             delays)
+        (unwind-protect
+            (cl-letf (((symbol-function 'run-with-timer)
+                       (lambda (secs repeat fn &rest args)
+                         (unless (eq fn #'bp/agent-sessions--pr-timeout)
+                           (push secs delays))
+                         (list 'timer secs repeat fn args)))
+                      ((symbol-function 'cancel-timer) #'ignore))
+              (bp/agent-sessions-pr-test--fetch-with gh (list url))
+              (should (equal '(:life queue :review nil)
+                             (gethash url bp/agent-sessions--pr-states)))
+              (should (equal '(20) delays)))
+          (delete-file gh))))))
 
 (provide 'agent-sessions-pr-test)
 ;;; agent-sessions-pr-test.el ends here
