@@ -754,6 +754,41 @@ value is the only channel back to the agent. `emacs-share-file` is a symlink to
 `emacs-share` that selects file mode implicitly, so already-running agents keep
 working while new instructions use the unified command.
 
+**A PR link shows GitHub's state, fetched by the dashboard and never stored.**
+A session with exactly one PR link gets two glyphs after its STATE column
+(lifecycle: `◌` draft, `○` open, `◔` checks running or, red, failed, `◕` in
+merge queue, `◉` merged, `⊘` closed; then review: `✓` approved, `✗` changes
+requested), and every PR link row ends with the same state in words. With
+several PRs no single one speaks for the session, so its row shows none and
+the column has no width when no session qualifies, like the lock column.
+
+- **In memory only.** GitHub is the source of truth and one request rebuilds
+  the table, so it fails the persistence bar above; a restart refetches.
+- **The dashboard polls, not the agents.** The render records the PR URLs it
+  drew and only arms timers: a repeating poll
+  (`bp/agent-sessions-pr-poll-interval`) that cancels itself once the
+  dashboard buffer is gone, and a near-immediate one-shot for a URL never
+  asked about, so a freshly shared PR does not wait a whole interval. The
+  render path starting a process would put the network on the hot path the
+  git note warns about. `g` forces a refetch, merged and closed PRs included;
+  otherwise those are fetched once, since they cannot change.
+- **One `gh api graphql` request for all of them, one at a time.** `gh pr
+  view --json` has no merge-queue field, which is why it is GraphQL. Each PR
+  is an alias (`p0`, `p1`, …), and a tick that finds a request still running
+  does nothing, so a slow GitHub cannot pile up processes; a request is killed
+  after `bp/agent-sessions-pr-fetch-timeout`.
+- **Failures are shown where they apply, and never erase a good state.** gh
+  exits 1 when *one* PR fails but still prints the others' data with an
+  `errors` entry naming the alias (verified), so the output is parsed whatever
+  the exit status and only that PR gets its message. A whole-request failure
+  (network, auth, rate limit) says nothing about any one PR, so it is recorded
+  only for PRs with no known state; the rest keep showing what GitHub last
+  said. Unfetched reads `…`/`fetching…`, failed reads `?` and the reason.
+  Nothing goes to the echo area: a background poll must not interrupt.
+- **This file is dynamically bound.** The sentinel cannot close over the URLs
+  it fetched, so they ride on the process (`process-put`), and the callbacks
+  are named functions.
+
 **PATH injection is additive by construction.** The terminal env sets
 `PATH=<our bin>:<the PATH the terminal was going to inherit anyway>`, read from
 `process-environment`. Building it from any other source could silently shrink
