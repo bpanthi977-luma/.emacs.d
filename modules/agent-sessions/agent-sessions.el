@@ -1117,15 +1117,36 @@ not push the titles of stated rows out of line with unstated ones."
 Zero when no session holds or waits for a lock, so the column costs nothing
 on a dashboard that does not use locks.")
 
-(defun bp/agent-sessions--row-text (prefix state suffix face)
-  "Build a session row: PREFIX, STATE in its own column, then SUFFIX.
+(defvar-local bp/agent-sessions--pr-column-width 0
+  "Width of the PR glyph column in the current dashboard render.
+Zero when no session has exactly one PR link, so the column costs nothing on a
+dashboard that does not use PR links.")
+
+(defun bp/agent-sessions--layer-faces (text base)
+  "Copy TEXT with BASE layered under each character's own `font-lock-face'.
+Characters without a face get BASE alone.  Layered rather than replaced for
+the reason `bp/agent-sessions--row-text' gives: the inner face carries a
+foreground, BASE may carry a row's attention background, and both must show."
+  (let ((out (copy-sequence text)))
+    (dotimes (i (length out))
+      (let ((own (get-text-property i 'font-lock-face text)))
+        (put-text-property i (1+ i) 'font-lock-face
+                           (if own (list own base) base)
+                           out)))
+    out))
+
+(defun bp/agent-sessions--row-text (prefix state suffix face &optional marks)
+  "Build a session row: PREFIX, STATE in its own column, MARKS, then SUFFIX.
 FACE dresses the whole row (it is what spans an attention highlight across it),
 and the state's own face is *merged* on top rather than replacing it — merged,
 because the state faces set a foreground and the row face sets a background, and
-either replacing the row face or letting it win would lose one of the two."
+either replacing the row face or letting it win would lose one of the two.
+MARKS (the PR glyph column) keeps its own faces, merged over FACE the same way."
   (let* ((column (format (format "%%-%ds" (bp/agent-sessions--state-column-width))
                          (or state "")))
-         (row (propertize (concat prefix column suffix) 'font-lock-face face))
+         (row (concat (propertize (concat prefix column) 'font-lock-face face)
+                      (bp/agent-sessions--layer-faces (or marks "") face)
+                      (propertize suffix 'font-lock-face face)))
          (state-face (and state (bp/agent-sessions--state-face state))))
     (when state-face
       ;; A *list* of faces on `font-lock-face', not `add-face-text-property':
@@ -1191,7 +1212,8 @@ indentation conveys the relationship."
                                       (bp/agent-sessions--session-branch session))))
                      (format "  (%s)" branch)
                    ""))
-         face))
+         face
+         (bp/agent-sessions--pr-marks session)))
       (bp/agent-sessions--insert-note
        (bp/agent-sessions--session-note-keys session)
        (concat base indent "    "))
@@ -3388,6 +3410,50 @@ not make them learn two highlights for it.")
   "Seconds before a GitHub request for PR state is abandoned."
   :type 'integer)
 
+(defface bp/agent-session-pr-draft '((t :foreground "#8a8a8a" :weight bold))
+  "Face for a draft PR.")
+(defface bp/agent-session-pr-open '((t :foreground "#86dc2f" :weight bold))
+  "Face for an open PR with no checks running or failing.")
+(defface bp/agent-session-pr-checks '((t :foreground "#e0b44a" :weight bold))
+  "Face for a PR whose checks are still running.")
+(defface bp/agent-session-pr-failed '((t :foreground "#f05050" :weight bold))
+  "Face for a PR whose checks failed.")
+(defface bp/agent-session-pr-queue '((t :foreground "#4f97d7" :weight bold))
+  "Face for a PR in the merge queue.")
+(defface bp/agent-session-pr-merged '((t :foreground "#bc6ec5" :weight bold))
+  "Face for a merged PR.")
+(defface bp/agent-session-pr-closed '((t :foreground "#f05050" :weight bold))
+  "Face for a PR closed without merging.")
+(defface bp/agent-session-pr-approved '((t :foreground "#86dc2f" :weight bold))
+  "Face for an approved PR's review mark.")
+(defface bp/agent-session-pr-changes-requested
+  '((t :foreground "#ff8a3d" :weight bold))
+  "Face for a PR whose reviewer requested changes.")
+(defface bp/agent-session-pr-unknown '((t :inherit shadow))
+  "Face for a PR whose state has not been fetched yet.")
+(defface bp/agent-session-pr-error '((t :foreground "#f05050"))
+  "Face for a PR whose state could not be fetched.")
+
+(defconst bp/agent-sessions--pr-life-display
+  '((draft  "◌" "draft"          bp/agent-session-pr-draft)
+    (open   "○" "open"           bp/agent-session-pr-open)
+    (checks "◔" "checks running" bp/agent-session-pr-checks)
+    (failed "◔" "checks failed"  bp/agent-session-pr-failed)
+    (queue  "◕" "in merge queue" bp/agent-session-pr-queue)
+    (merged "◉" "merged"         bp/agent-session-pr-merged)
+    (closed "⊘" "closed"         bp/agent-session-pr-closed))
+  "Lifecycle state -> (GLYPH WORDS FACE).
+The circle fills as a PR moves forward; checks failing keeps the checks glyph
+and turns it red.")
+
+(defconst bp/agent-sessions--pr-review-display
+  '((approved          "✓" "approved"          bp/agent-session-pr-approved)
+    (changes-requested "✗" "changes requested" bp/agent-session-pr-changes-requested))
+  "Review decision -> (GLYPH WORDS FACE).  No decision shows nothing.")
+
+(defconst bp/agent-sessions--pr-marks-width 5
+  "Width of the PR glyph column: lifecycle, space, review, then two spaces.")
+
 (defvar bp/agent-sessions--pr-states (make-hash-table :test 'equal)
   "Hash table PR URL -> (:life LIFE :review REVIEW) or (:error MESSAGE).
 Filled from GitHub and never persisted: GitHub is the source of truth and one
@@ -3619,6 +3685,59 @@ fetch for any URL that arrived while one was running."
                               (setq bp/agent-sessions--pr-kick-timer nil)
                               (bp/agent-sessions--pr-fetch)))))))
 
+(defun bp/agent-sessions--pr-glyphs (url)
+  "The session-row glyphs for the PR at URL: lifecycle, space, review."
+  (let ((state (gethash url bp/agent-sessions--pr-states)))
+    (cond
+     ((not (bp/agent-sessions--pr-url-parts url)) "")
+     ((null state) (propertize "…" 'font-lock-face 'bp/agent-session-pr-unknown))
+     ((plist-get state :error)
+      (propertize "?" 'font-lock-face 'bp/agent-session-pr-error))
+     (t
+      (pcase-let ((`(,_ ,glyph ,_ ,face)
+                   (assq (plist-get state :life)
+                         bp/agent-sessions--pr-life-display))
+                  (review (assq (plist-get state :review)
+                                bp/agent-sessions--pr-review-display)))
+        (concat (propertize glyph 'font-lock-face face)
+                (if review
+                    (concat " " (propertize (nth 1 review)
+                                            'font-lock-face (nth 3 review)))
+                  "")))))))
+
+(defun bp/agent-sessions--pr-words (url)
+  "The PR row's state for URL in words, e.g. `checks running · approved'."
+  (let ((state (gethash url bp/agent-sessions--pr-states)))
+    (cond
+     ((not (bp/agent-sessions--pr-url-parts url))
+      (propertize "not a GitHub PR URL" 'font-lock-face 'bp/agent-session-pr-error))
+     ((null state)
+      (propertize "fetching…" 'font-lock-face 'bp/agent-session-pr-unknown))
+     ((plist-get state :error)
+      (propertize (plist-get state :error)
+                  'font-lock-face 'bp/agent-session-pr-error))
+     (t
+      (pcase-let ((`(,_ ,_ ,words ,face)
+                   (assq (plist-get state :life)
+                         bp/agent-sessions--pr-life-display))
+                  (review (assq (plist-get state :review)
+                                bp/agent-sessions--pr-review-display)))
+        (concat (propertize words 'font-lock-face face)
+                (if review
+                    (concat (propertize " · " 'font-lock-face 'shadow)
+                            (propertize (nth 2 review)
+                                        'font-lock-face (nth 3 review)))
+                  "")))))))
+
+(defun bp/agent-sessions--pr-marks (session)
+  "SESSION's PR glyph column, padded to `bp/agent-sessions--pr-column-width'."
+  (if (zerop bp/agent-sessions--pr-column-width)
+      ""
+    (let ((link (bp/agent-sessions--session-pr-link session)))
+      (bp/agent-locks--pad
+       (if link (bp/agent-sessions--pr-glyphs (plist-get link :url)) "")
+       bp/agent-sessions--pr-column-width))))
+
 (defface bp/agent-session-link-unvisited
   '((t :inherit bp/agent-session-needs-attention))
   "Face for an external link not opened since the agent registered it.")
@@ -3638,14 +3757,20 @@ fetch for any URL that arrived while one was running."
                 (if unvisited 'needs-attention 'idle))
           bp/agent-sessions--row-status)
     (magit-insert-section (bp/agent-session-link url t)
-      (magit-insert-heading
-       (propertize
-        (concat indent (if unvisited "● " "  ")
-                (format "%-28s %s\n" kind-label
-                        (or (plist-get link :label) url)))
-        'font-lock-face (if unvisited
-                            'bp/agent-session-link-unvisited
-                          'bp/agent-session-link)))
+      (let ((face (if unvisited
+                      'bp/agent-session-link-unvisited
+                    'bp/agent-session-link))
+            (words (and (equal kind "pr") (bp/agent-sessions--pr-words url))))
+        (magit-insert-heading
+          (concat
+           (propertize
+            (concat indent (if unvisited "● " "  ")
+                    (format "%-28s %s" kind-label
+                            (or (plist-get link :label) url))
+                    (if words "   " ""))
+            'font-lock-face face)
+           (if words (bp/agent-sessions--layer-faces words face) "")
+           (propertize "\n" 'font-lock-face face))))
       (bp/agent-sessions--insert-note
        (list (bp/agent-sessions--link-note-key url))
        (concat indent "    ")))))
@@ -3860,6 +3985,13 @@ same path under another session by magit's parent chain."
                                                (plist-get entry :session))))
                                            entries))))
                 (if (> widest 0) (1+ widest) 0)))
+        (setq bp/agent-sessions--pr-column-width
+              (if (seq-some (lambda (entry)
+                              (bp/agent-sessions--session-pr-link
+                               (plist-get entry :session)))
+                            entries)
+                  bp/agent-sessions--pr-marks-width
+                0))
         (bp/agent-sessions--pr-note-shown
          (bp/agent-sessions--pr-urls-of entries))
         (let ((repos (bp/agent-sessions--build-tree entries)))
