@@ -3402,7 +3402,7 @@ not make them learn two highlights for it.")
 ;; dashboard buffer does.  The render path never starts a process; it records
 ;; which PRs it drew and arms the timers.
 
-(defcustom bp/agent-sessions-pr-poll-interval 120
+(defcustom bp/agent-sessions-pr-poll-interval 30
   "Seconds between refreshes of the GitHub state of the dashboard's PRs."
   :type 'integer)
 
