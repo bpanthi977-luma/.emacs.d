@@ -21,6 +21,8 @@
     (append (list :isDraft (plist-get props :isDraft)
                   :state (or (plist-get props :state) "OPEN")
                   :reviewDecision (plist-get props :reviewDecision)
+                  :reviewRequests (list :totalCount
+                                        (or (plist-get props :requests) 0))
                   :isInMergeQueue (plist-get props :isInMergeQueue)
                   :commits (list :nodes
                                  (list (list :commit
@@ -56,14 +58,20 @@
                                   :life))))))
 
 (ert-deftest bp/agent-sessions-pr-state-from-node-reads-review ()
-  (dolist (case '(("APPROVED" approved)
-                  ("CHANGES_REQUESTED" changes-requested)
-                  ("REVIEW_REQUIRED" nil)
-                  (nil nil)))
-    (should (eq (cadr case)
+  (pcase-dolist (`(,decision ,requests ,review)
+                 '(("APPROVED" 0 approved)
+                   ("CHANGES_REQUESTED" 0 changes-requested)
+                   ;; A decision outranks reviewers still listed as requested.
+                   ("APPROVED" 2 approved)
+                   ("CHANGES_REQUESTED" 1 changes-requested)
+                   ("REVIEW_REQUIRED" 1 requested)
+                   (nil 1 requested)
+                   ("REVIEW_REQUIRED" 0 nil)
+                   (nil 0 nil)))
+    (should (eq review
                 (plist-get (bp/agent-sessions--pr-state-from-node
                             (bp/agent-sessions-pr-test--node
-                             :reviewDecision (car case)))
+                             :reviewDecision decision :requests requests))
                            :review)))))
 
 (ert-deftest bp/agent-sessions-pr-url-parts-accepts-only-github-prs ()
@@ -89,7 +97,8 @@
              query))
     (should (string-match-p
              "p1:repository(owner:\"c\",name:\"d\"){pullRequest(number:2)"
-             query))))
+             query))
+    (should (string-match-p "reviewRequests(first:0){totalCount}" query))))
 
 (ert-deftest bp/agent-sessions-pr-apply-response-keeps-good-prs-beside-errors ()
   (bp/agent-sessions-pr-test--isolated
@@ -148,6 +157,14 @@
                      (bp/agent-sessions-pr-test--faces
                       (bp/agent-sessions--pr-glyphs url))))
       (should (equal "checks failed · changes requested"
+                     (bp/agent-sessions--pr-words url)))
+      (puthash url '(:life open :review requested) bp/agent-sessions--pr-states)
+      (should (equal "○ ◇" (bp/agent-sessions--pr-glyphs url)))
+      (should (equal '(bp/agent-session-pr-open
+                       bp/agent-session-pr-review-requested)
+                     (bp/agent-sessions-pr-test--faces
+                      (bp/agent-sessions--pr-glyphs url))))
+      (should (equal "open · reviewer assigned"
                      (bp/agent-sessions--pr-words url)))
       (puthash url '(:life merged :review nil) bp/agent-sessions--pr-states)
       (should (equal "◉" (bp/agent-sessions--pr-glyphs url)))
