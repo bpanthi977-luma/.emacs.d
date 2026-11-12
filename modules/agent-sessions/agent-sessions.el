@@ -3370,6 +3370,255 @@ not make them learn two highlights for it.")
   '((t :inherit default))
   "Face for a shared file the user has already opened.")
 
+;;;; PR state
+;;
+;; A session that has shared exactly one GitHub PR shows that PR's state as two
+;; glyphs after its STATE column (lifecycle, then review); every PR link row
+;; ends with its own state in words.  The state is GitHub's, fetched by the
+;; dashboard and held only in memory: one background `gh api graphql' request
+;; covers every PR on the dashboard, on a timer that lives only while the
+;; dashboard buffer does.  The render path never starts a process; it records
+;; which PRs it drew and arms the timers.
+
+(defcustom bp/agent-sessions-pr-poll-interval 120
+  "Seconds between refreshes of the GitHub state of the dashboard's PRs."
+  :type 'integer)
+
+(defcustom bp/agent-sessions-pr-fetch-timeout 30
+  "Seconds before a GitHub request for PR state is abandoned."
+  :type 'integer)
+
+(defvar bp/agent-sessions--pr-states (make-hash-table :test 'equal)
+  "Hash table PR URL -> (:life LIFE :review REVIEW) or (:error MESSAGE).
+Filled from GitHub and never persisted: GitHub is the source of truth and one
+request rebuilds it.  A URL with no entry has not been fetched yet.")
+
+(defvar bp/agent-sessions--pr-urls nil
+  "The PR URLs the last dashboard render drew; what a fetch asks GitHub about.")
+
+(defvar bp/agent-sessions--pr-process nil
+  "The `gh' process fetching PR state, or nil.  At most one runs at a time.")
+
+(defvar bp/agent-sessions--pr-poll-timer nil
+  "Repeating timer refreshing PR state while the dashboard exists.")
+
+(defvar bp/agent-sessions--pr-kick-timer nil
+  "One-shot timer fetching PRs a render drew but GitHub has not been asked about.")
+
+(defun bp/agent-sessions--pr-url-parts (url)
+  "Return (OWNER REPO NUMBER) for a GitHub pull request URL, or nil.
+OWNER and REPO are limited to the characters GitHub allows, which also keeps
+them safe to splice into a GraphQL string literal."
+  (when (string-match
+         "\\`https?://github\\.com/\\([A-Za-z0-9_.-]+\\)/\\([A-Za-z0-9_.-]+\\)/pull/\\([0-9]+\\)\\(?:[/?#]\\|\\'\\)"
+         url)
+    (list (match-string 1 url) (match-string 2 url)
+          (string-to-number (match-string 3 url)))))
+
+(defun bp/agent-sessions--pr-links (session)
+  "SESSION's shared PR links, in display order."
+  (seq-filter (lambda (link) (equal (plist-get link :kind) "pr"))
+              (bp/agent-sessions--session-links session)))
+
+(defun bp/agent-sessions--session-pr-link (session)
+  "SESSION's PR link when it has exactly one, else nil.
+With several PRs no single one speaks for the session, so its row shows none;
+each PR's own row still shows its state."
+  (let ((prs (bp/agent-sessions--pr-links session)))
+    (and prs (null (cdr prs)) (car prs))))
+
+(defun bp/agent-sessions--pr-urls-of (entries)
+  "Every PR URL linked from the sessions of dashboard ENTRIES, without repeats."
+  (delete-dups
+   (mapcan (lambda (entry)
+             (mapcar (lambda (link) (plist-get link :url))
+                     (bp/agent-sessions--pr-links (plist-get entry :session))))
+           entries)))
+
+(defun bp/agent-sessions--pr-state-from-node (node)
+  "The (:life LIFE :review REVIEW) state of GraphQL pullRequest NODE.
+The first matching lifecycle wins: a merged or closed PR is that whatever its
+checks say, a draft is a draft, and a PR in the merge queue is past its own
+checks even while the queue runs more."
+  (let* ((commit (plist-get (car (plist-get (plist-get node :commits) :nodes))
+                            :commit))
+         (checks (plist-get (plist-get commit :statusCheckRollup) :state)))
+    (list :life (pcase (plist-get node :state)
+                  ("MERGED" 'merged)
+                  ("CLOSED" 'closed)
+                  (_ (cond ((plist-get node :isDraft) 'draft)
+                           ((plist-get node :isInMergeQueue) 'queue)
+                           ((member checks '("PENDING" "EXPECTED")) 'checks)
+                           ((member checks '("FAILURE" "ERROR")) 'failed)
+                           (t 'open))))
+          :review (pcase (plist-get node :reviewDecision)
+                    ("APPROVED" 'approved)
+                    ("CHANGES_REQUESTED" 'changes-requested)))))
+
+(defun bp/agent-sessions--pr-query (urls)
+  "A GraphQL query for every PR in URLS, aliased p0, p1, … in order."
+  (let ((i -1))
+    (concat
+     "query{"
+     (mapconcat
+      (lambda (url)
+        (pcase-let ((`(,owner ,repo ,number)
+                     (bp/agent-sessions--pr-url-parts url)))
+          (format "p%d:repository(owner:\"%s\",name:\"%s\"){pullRequest(number:%d){isDraft state reviewDecision isInMergeQueue commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}"
+                  (setq i (1+ i)) owner repo number)))
+      urls " ")
+     "}")))
+
+(defun bp/agent-sessions--pr-apply-response (urls response)
+  "Record the state of each of URLS from RESPONSE, parsed GraphQL JSON.
+GitHub answers a request where one PR failed with the others' data plus an
+`errors' entry naming the failed alias, so one bad link never blanks the rest."
+  (let ((data (plist-get response :data))
+        (errors (plist-get response :errors))
+        (i 0))
+    (dolist (url urls)
+      (let* ((alias (format "p%d" i))
+             (pr (plist-get (plist-get data (intern (concat ":" alias)))
+                            :pullRequest)))
+        (puthash url
+                 (if pr
+                     (bp/agent-sessions--pr-state-from-node pr)
+                   (list :error
+                         (or (seq-some (lambda (err)
+                                         (and (equal (car (plist-get err :path))
+                                                     alias)
+                                              (plist-get err :message)))
+                                       errors)
+                             "PR not found")))
+                 bp/agent-sessions--pr-states))
+      (setq i (1+ i)))))
+
+(defun bp/agent-sessions--pr-record-failure (urls message)
+  "Record MESSAGE as the state of each of URLS that has no good state.
+A whole request failing (network, auth, rate limit) says nothing about any one
+PR, so a state GitHub already gave is kept until the next fetch succeeds."
+  (dolist (url urls)
+    (let ((state (gethash url bp/agent-sessions--pr-states)))
+      (when (or (null state) (plist-get state :error))
+        (puthash url (list :error message) bp/agent-sessions--pr-states)))))
+
+(defun bp/agent-sessions--pr-failure-message (proc stderr)
+  "Why the `gh' process PROC failed as a whole, given its STDERR text."
+  (cond ((process-get proc 'timed-out) "GitHub request timed out")
+        ((not (string-empty-p stderr))
+         (string-remove-prefix "gh: " (car (split-string stderr "\n"))))
+        (t (format "gh exited with status %d" (process-exit-status proc)))))
+
+(defun bp/agent-sessions--pr-sentinel (proc _event)
+  "Finish the `gh' fetch PROC once it has exited."
+  (unless (process-live-p proc)
+    (bp/agent-sessions--pr-finish proc)))
+
+(defun bp/agent-sessions--pr-timeout (proc)
+  "Abandon the `gh' fetch PROC if it is still running."
+  (when (process-live-p proc)
+    (process-put proc 'timed-out t)
+    (delete-process proc)))
+
+(defun bp/agent-sessions--pr-finish (proc)
+  "Record what the finished `gh' process PROC said about its URLs, then redraw.
+The URLs and stderr file ride on PROC's properties: this file is not
+lexically bound, so a sentinel cannot close over them."
+  (let* ((urls (process-get proc 'urls))
+         (stderr-file (process-get proc 'stderr-file))
+         (buffer (process-buffer proc))
+         (output (if (buffer-live-p buffer)
+                     (with-current-buffer buffer (buffer-string))
+                   ""))
+         (stderr (with-temp-buffer
+                   (ignore-errors (insert-file-contents stderr-file))
+                   (string-trim (buffer-string))))
+         (response (ignore-errors
+                     (json-parse-string output :object-type 'plist
+                                        :array-type 'list
+                                        :null-object nil :false-object nil))))
+    (when (buffer-live-p buffer) (kill-buffer buffer))
+    (ignore-errors (delete-file stderr-file))
+    (when (eq proc bp/agent-sessions--pr-process)
+      (setq bp/agent-sessions--pr-process nil))
+    ;; `gh' exits 1 when any PR failed but still prints the others' data.
+    (if (and (not (process-get proc 'timed-out)) (plist-get response :data))
+        (bp/agent-sessions--pr-apply-response urls response)
+      (bp/agent-sessions--pr-record-failure
+       urls (bp/agent-sessions--pr-failure-message proc stderr)))
+    (bp/agent-sessions--refresh-if-visible)))
+
+(defun bp/agent-sessions--pr-fetch (&optional force)
+  "Ask GitHub for the state of the dashboard's PRs in one background request.
+Merged and closed PRs cannot change, so they are skipped unless FORCE.  Does
+nothing while an earlier request is still running."
+  (let ((urls (seq-filter
+               (lambda (url)
+                 (and (bp/agent-sessions--pr-url-parts url)
+                      (or force
+                          (not (memq (plist-get (gethash
+                                                 url bp/agent-sessions--pr-states)
+                                                :life)
+                                     '(merged closed))))))
+               bp/agent-sessions--pr-urls))
+        (gh (executable-find "gh")))
+    (cond
+     ((or (null urls) (process-live-p bp/agent-sessions--pr-process)) nil)
+     ((null gh)
+      (bp/agent-sessions--pr-record-failure urls "gh not found")
+      (bp/agent-sessions--refresh-if-visible))
+     (t
+      (let* ((stderr-file (make-temp-file "agent-sessions-pr-"))
+             (proc
+              (make-process
+               :name "agent-sessions-pr"
+               :buffer (generate-new-buffer " *agent-sessions-pr*")
+               ;; stderr goes to a file so it cannot interleave with the JSON.
+               :command (list "sh" "-c"
+                              "exec \"$0\" api graphql -f query=\"$1\" 2>\"$2\""
+                              gh (bp/agent-sessions--pr-query urls) stderr-file)
+               :connection-type 'pipe
+               :noquery t)))
+        (process-put proc 'urls urls)
+        (process-put proc 'stderr-file stderr-file)
+        ;; Set after the properties, so the sentinel never sees a bare process.
+        (set-process-sentinel proc #'bp/agent-sessions--pr-sentinel)
+        (setq bp/agent-sessions--pr-process proc)
+        (run-with-timer bp/agent-sessions-pr-fetch-timeout nil
+                        #'bp/agent-sessions--pr-timeout proc))))))
+
+(defun bp/agent-sessions--pr-poll ()
+  "Refresh PR state while the dashboard exists; stop polling once it is gone."
+  (if (get-buffer bp/agent-sessions-buffer-name)
+      (bp/agent-sessions--pr-fetch)
+    (cancel-timer bp/agent-sessions--pr-poll-timer)
+    (setq bp/agent-sessions--pr-poll-timer nil)))
+
+(defun bp/agent-sessions--pr-note-shown (urls)
+  "Record URLS as the PRs on the dashboard and see that they get fetched.
+Called by the render, so it only arms timers: the poll, and a near-immediate
+fetch when a URL has never been asked about, so a newly shared PR does not
+wait a whole poll interval.  A fetch redraws, and that redraw re-arms the
+fetch for any URL that arrived while one was running."
+  (setq bp/agent-sessions--pr-urls urls)
+  (when urls
+    (unless bp/agent-sessions--pr-poll-timer
+      (setq bp/agent-sessions--pr-poll-timer
+            (run-with-timer bp/agent-sessions-pr-poll-interval
+                            bp/agent-sessions-pr-poll-interval
+                            #'bp/agent-sessions--pr-poll)))
+    (when (and (not bp/agent-sessions--pr-kick-timer)
+               (not (process-live-p bp/agent-sessions--pr-process))
+               (seq-some (lambda (url)
+                           (and (bp/agent-sessions--pr-url-parts url)
+                                (not (gethash url bp/agent-sessions--pr-states))))
+                         urls))
+      (setq bp/agent-sessions--pr-kick-timer
+            (run-with-timer 0.5 nil
+                            (lambda ()
+                              (setq bp/agent-sessions--pr-kick-timer nil)
+                              (bp/agent-sessions--pr-fetch)))))))
+
 (defface bp/agent-session-link-unvisited
   '((t :inherit bp/agent-session-needs-attention))
   "Face for an external link not opened since the agent registered it.")
@@ -3611,6 +3860,8 @@ same path under another session by magit's parent chain."
                                                (plist-get entry :session))))
                                            entries))))
                 (if (> widest 0) (1+ widest) 0)))
+        (bp/agent-sessions--pr-note-shown
+         (bp/agent-sessions--pr-urls-of entries))
         (let ((repos (bp/agent-sessions--build-tree entries)))
           (if (null repos)
               (insert "No active sessions.\n")
@@ -3759,7 +4010,9 @@ invalidates the worktree cache and re-reads each session's repo/branch info."
   (clrhash bp/agent-sessions--worktrees-cache)
   (bp/agent-sessions--reread-repo-info)
   (bp/agent-locks--reload)
-  (bp/agent-sessions--refresh))
+  (bp/agent-sessions--refresh)
+  ;; After the render, which is what records the PRs on the dashboard.
+  (bp/agent-sessions--pr-fetch t))
 
 (defun bp/agent-sessions--refresh-if-visible ()
   (let ((buf (get-buffer bp/agent-sessions-buffer-name)))
