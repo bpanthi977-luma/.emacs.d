@@ -73,7 +73,7 @@ terminal, addressing a live one, and waiting.
 
 ```bash
 emacs-agent worktrees                     # who is working where
-emacs-agent spawn --type claude --worktree ~/dev/luma-core_5 \
+emacs-agent spawn --type claude --worktree ~/dev/project_5 \
   --task "$(cat /tmp/brief.md)" --title "auth rewrite" --model opus
 emacs-agent wait --types done,blocked,question,answer --timeout 90
 emacs-agent send --to 11588-42 --type answer --subject "Use approach B" --body "..."
@@ -115,10 +115,10 @@ so if it *does* own one, say that too.)
 `emacs-agent worktrees` prints every worktree of your repo with who is in it:
 
 ```
-repo: ~/dev/luma-core/
-2 agents  ~/dev/luma-core         luma-core (main)         dirty  claude(running) codex(idle)
-0 agents  ~/dev/luma-core_2       luma-core_2 (PRO-14062)  dirty
-0 agents  ~/dev/luma-core_5       luma-core_5 (main)       clean
+repo: ~/dev/project/
+2 agents  ~/dev/project           project (main)           dirty  claude(running) codex(idle)
+0 agents  ~/dev/project_2         project_2 (fix-login)    dirty
+0 agents  ~/dev/project_5         project_5 (main)         clean
 ```
 
 - The count is live agent sessions there right now — the facts, not a verdict.
@@ -130,7 +130,7 @@ repo: ~/dev/luma-core/
   numbered worktree yourself**:
 
   ```bash
-  git -C ~/dev/luma-core worktree add ~/dev/luma-core_11 -b <branch> origin/main
+  git -C ~/dev/project worktree add ~/dev/project_11 -b <branch> origin/main
   ```
 
   Numeric suffix, next unused number, based on the repo default (`origin/main`)
