@@ -619,6 +619,46 @@ reads Emacs's answer from, as named at the head of the elisp it sends.")
               (should (equal text (buffer-string))))))
       (delete-directory stub-dir t))))
 
+(ert-deftest bp/agent-cli-retries-a-refused-connection ()
+  ;; A busy Emacs refuses connections in bursts; a refusal never reached it,
+  ;; so the CLI retries.  Any other failure still ends the command at once.
+  (let* ((stub-dir (make-temp-file "agent-refused-stub-" t))
+         (stub (expand-file-name "emacsclient" stub-dir))
+         (count (expand-file-name "count" stub-dir)))
+    (unwind-protect
+        (cl-flet ((run (tries failure)
+                    (with-temp-file stub
+                      (insert "#!/bin/sh\n" bp/mailbox-test--stub-reply-file
+                              "n=$(cat " (shell-quote-argument count) " 2>/dev/null || echo 0)\n"
+                              "echo $((n + 1)) > " (shell-quote-argument count) "\n"
+                              "if [ \"$n\" -lt 2 ]; then echo " (shell-quote-argument failure) " >&2; exit 1; fi\n"
+                              "printf 'workers: 0' > \"$reply\"\n"))
+                    (set-file-modes stub #o755)
+                    (when (file-exists-p count) (delete-file count))
+                    (let ((process-environment
+                           (cons (concat "PATH=" stub-dir ":" (getenv "PATH"))
+                                 (bp/lock-test--env
+                                  nil (list "EMACS_AGENT_SESSION_ID=T-1"
+                                            (format "EMACS_AGENT_CONNECT_TRIES=%d" tries))))))
+                      (with-temp-buffer
+                        (list (call-process (expand-file-name "emacs-agent"
+                                                              bp/agent-sessions--bin-dir)
+                                            nil t nil "list")
+                              (buffer-string))))))
+          (let ((refused "emacsclient: can't connect to /tmp/server: Connection refused"))
+            (should (equal '(0 "workers: 0") (run 3 refused)))
+            ;; Out of tries: the refusal is reported.
+            (pcase-let ((`(,code ,output) (run 2 refused)))
+              (should (= 1 code))
+              (should (string-match-p "Connection refused" output))))
+          (pcase-let ((`(,code ,output) (run 3 "*ERROR*: void-function x")))
+            (should (= 1 code))
+            (should (string-match-p "void-function" output))
+            (should (equal "1\n" (with-temp-buffer
+                                   (insert-file-contents count)
+                                   (buffer-string))))))
+      (delete-directory stub-dir t))))
+
 (defvar bp/mailbox-test--stdin nil
   "File `bp/mailbox-test--agent' feeds emacs-agent as stdin; nil for /dev/null.")
 
