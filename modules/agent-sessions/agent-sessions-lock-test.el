@@ -582,6 +582,43 @@ nothing is pasted anywhere."
       (bp/agent-mailboxes--insert-section)
       (should (string-empty-p (buffer-string))))))
 
+(defconst bp/mailbox-test--stub-reply-file
+  "reply=$(printf '%s' \"$2\" | sed -n '1s/^(let ((f \"\\([^\"]*\\)\").*/\\1/p')\n"
+  "Shell line for a stub emacsclient: set $reply to the file emacs-agent
+reads Emacs's answer from, as named at the head of the elisp it sends.")
+
+(ert-deftest bp/agent-cli-reads-the-reply-from-its-file-not-emacsclient-output ()
+  ;; Real emacsclient can garble a long reply on stdout; the stub prints that
+  ;; garbage and writes the true reply to the file, which must win, byte-exact.
+  (let* ((stub-dir (make-temp-file "agent-reply-stub-" t))
+         (stub (expand-file-name "emacsclient" stub-dir))
+         (fixture (expand-file-name "fixture" stub-dir))
+         (text (concat
+                (mapconcat (lambda (i)
+                             (format "%d. a \"quoted\" \\path & more\n- दash line" i))
+                           (number-sequence 1 400) "\n")
+                "\n\nlast line &_ ends here")))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'utf-8-unix))
+            (write-region text nil fixture nil 'silent))
+          (with-temp-file stub
+            (insert "#!/bin/sh\n" bp/mailbox-test--stub-reply-file
+                    "cat " (shell-quote-argument fixture) " > \"$reply\"\n"
+                    "printf '\"partial\\n*ERROR*: Unknown message: -\\n"
+                    "*ERROR*: Unknown message: print-nonl &_x\\n'\n"))
+          (set-file-modes stub #o755)
+          (let ((process-environment
+                 (cons (concat "PATH=" stub-dir ":" (getenv "PATH"))
+                       (bp/lock-test--env nil '("EMACS_AGENT_SESSION_ID=T-1"))))
+                (coding-system-for-read 'utf-8-unix))
+            (with-temp-buffer
+              (should (= 0 (call-process
+                            (expand-file-name "emacs-agent" bp/agent-sessions--bin-dir)
+                            nil t nil "list")))
+              (should (equal text (buffer-string))))))
+      (delete-directory stub-dir t))))
+
 (defun bp/mailbox-test--agent (who &rest args)
   "Run emacs-agent ARGS as conversation WHO against a stub emacsclient.
 The stub records the elisp it was asked to evaluate and answers as Emacs
@@ -594,9 +631,10 @@ would on success, so this tests what the shell itself decides.  Returns
         (progn
           (with-temp-file stub
             (insert "#!/bin/sh\nprintf '%s' \"$2\" > " (shell-quote-argument record) "\n"
+                    bp/mailbox-test--stub-reply-file
                     "case \"$2\" in\n"
-                    "  *orchestration-check*) printf '\"messages: 0\"\\n' ;;\n"
-                    "  *) printf '\"Sent ok\"\\n' ;;\n"
+                    "  *orchestration-check*) printf 'messages: 0' > \"$reply\" ;;\n"
+                    "  *) printf 'Sent ok' > \"$reply\" ;;\n"
                     "esac\n"))
           (set-file-modes stub #o755)
           (let ((process-environment
