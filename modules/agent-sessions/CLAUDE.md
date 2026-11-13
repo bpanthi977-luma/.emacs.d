@@ -664,6 +664,15 @@ unrelated purposes. Mail read from a mailbox carries `--from DIR` in its
 goes to the mailbox, where the role's own watcher already waits, and two waits
 would race for it.
 
+`spawn --from DIR` applies the same idea to workers: their
+`EMACS_AGENT_COORDINATOR`, and the coordinator line of their launch preamble,
+name the mailbox instead of the spawning terminal. Without it, a worker that
+outlives its coordinator's conversation reports to a dead terminal id, and
+mail to a dead terminal *revives* that conversation — a second instance of the
+role beside the one holding the lock. Only the address changes: dashboard
+nesting and `list` still follow the spawning terminal, since that is the live
+parent the user sees.
+
 **Delivery is pull-only, and nothing starts by itself.** Mailbox mail is never
 pasted, queued or used to revive anything; the role keeps a background
 `wait --mailbox` running. Mail to a mailbox with no running holder waits for

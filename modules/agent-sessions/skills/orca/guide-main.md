@@ -333,6 +333,12 @@ emacs-agent send --to <address> --from ~/agents/reviewer --subject "..."
   conversation, which may be gone by then. The `Reply:` line of mail you read
   from a mailbox already includes `--from DIR`. `send-and-wait` does not take
   `--from`: your watcher collects the reply.
+- **Spawn as the role.** `spawn --from DIR` makes the worker report to the
+  mailbox instead of to your terminal, so its final report and questions reach
+  whichever conversation plays the role when they arrive, even if you were
+  restarted meanwhile. Without it, a worker reporting to a dead terminal
+  revives that old conversation instead. The worker still appears nested under
+  your terminal in the dashboard, and `list` still shows it only there.
 - **No listener.** Mail to a mailbox nobody is listening on queues. The
   dashboard lists such mailboxes at the top, and the human starts an agent
   there (`RET`), which is launched in DIR with the prompt `You are <name>.
