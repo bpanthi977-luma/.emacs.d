@@ -7693,8 +7693,24 @@ nothing happens.  Return non-nil when LOCK was released."
                                 'bp/agent-session-needs-attention))))))
       (insert "\n"))))
 
+(defcustom bp/agent-mailboxes-agents-directory "~/dev/agents/"
+  "Where persistent agents live: one mailbox directory per agent, by name.
+It holds the shared `PLAYBOOK.md' that `bp/agent-mailboxes-start' tells a new
+agent to read before its own `context.md'."
+  :type 'directory)
+
+(defun bp/agent-mailboxes--start-prompt (dir)
+  "The first prompt for an agent started in mailbox DIR.
+The agent is named after DIR, and reads the shared playbook in
+`bp/agent-mailboxes-agents-directory' before DIR's own `context.md'."
+  (format "You are %s. Read %s and then %s"
+          (file-name-nondirectory (directory-file-name dir))
+          (abbreviate-file-name
+           (expand-file-name "PLAYBOOK.md" bp/agent-mailboxes-agents-directory))
+          (abbreviate-file-name (expand-file-name "context.md" dir))))
+
 (defun bp/agent-mailboxes-start (dir)
-  "Start an agent in mailbox DIR, told to read `../playbook.md' and `context.md'.
+  "Start an agent in mailbox DIR, prompted by `bp/agent-mailboxes--start-prompt'.
 The agent type is asked for; DIR is the working directory.  The agent takes
 the mailbox's lock with its first `emacs-agent wait --mailbox', which is when
 its backlog reaches it."
@@ -7715,7 +7731,7 @@ its backlog reaches it."
                   (format "%s.md" (bp/agent-orchestration--next-id "mailbox"))
                   bp/agent-orchestration--brief-dir)))
     (make-directory bp/agent-orchestration--brief-dir t)
-    (with-temp-file prompt (insert "read ../playbook.md and then read context.md"))
+    (with-temp-file prompt (insert (bp/agent-mailboxes--start-prompt dir)))
     (let ((buf (bp/agent-sessions--create-terminal
                 dir (or (plist-get (bp/agent-session--repo-info dir) :worktree)
                         name))))

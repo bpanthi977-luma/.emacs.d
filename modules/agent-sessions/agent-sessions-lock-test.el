@@ -662,4 +662,10 @@ would on success, so this tests what the shell itself decides.  Returns
         (should (= 1 code))
         (should (string-match-p "no such mailbox directory" output))))))
 
+(ert-deftest bp/mailbox-start-prompt-names-the-agent-and-its-files ()
+  (let ((bp/agent-mailboxes-agents-directory "~/dev/agents/"))
+    (should (equal "You are luffa. Read ~/dev/agents/PLAYBOOK.md and then ~/dev/agents/luffa/context.md"
+                   (bp/agent-mailboxes--start-prompt
+                    (expand-file-name "~/dev/agents/luffa/"))))))
+
 ;;; agent-sessions-lock-test.el ends here

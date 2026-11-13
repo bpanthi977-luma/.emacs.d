@@ -669,9 +669,10 @@ pasted, queued or used to revive anything; the role keeps a background
 `wait --mailbox` running. Mail to a mailbox with no running holder waits for
 the user: the dashboard lists it at the top (with its unread count, oldest
 subject, and a not-running holder's lock if one still blocks it), and `RET`
-starts an agent in DIR prompted with `read ../playbook.md and then read
-context.md` — the shared playbook beside the mailboxes, then the role's own
-context. Starting one automatically was considered and dropped: a burst of mail before the first
+starts an agent in DIR prompted with `You are <name>. Read
+~/dev/agents/PLAYBOOK.md and then ~/dev/agents/<name>/context.md` — the
+shared playbook in `bp/agent-mailboxes-agents-directory`, then the role's own
+context; the name is the mailbox directory's. Starting one automatically was considered and dropped: a burst of mail before the first
 instance took the lock would start several, and the second would sit refused
 on the lock waiting for the user anyway.
 
