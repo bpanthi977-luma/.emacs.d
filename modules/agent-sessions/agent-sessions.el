@@ -4388,19 +4388,21 @@ section point was on is precisely the one that no longer exists."
     (goto-char (oref target start))
     t))
 
-(defun bp/agent-sessions--next-file-ident-at-point ()
-  "Return the next shared-file section's identity within this session.
-Return nil on the last file.  Point may be inside a file's note."
-  (let ((section (magit-current-section)))
-    (when (and section (eq (oref section type) 'bp/agent-session-note))
-      (setq section (oref section parent)))
-    (when (and section (eq (oref section type) 'bp/agent-session-file))
-      (let* ((siblings (seq-filter
-                        (lambda (child)
-                          (eq (oref child type) 'bp/agent-session-file))
-                        (oref (oref section parent) children)))
-             (next (nth (1+ (seq-position siblings section)) siblings)))
-        (and next (magit-section-ident next))))))
+(defun bp/agent-sessions--next-row-ident-at-point ()
+  "Return the identity of the row on the next line below point, or nil.
+Skips lines still inside the current section and file notes, which are part
+of the file row above them: pressing `u' again there would act on that file."
+  (let ((current (magit-current-section)))
+    (save-excursion
+      (catch 'found
+        (while (and (zerop (forward-line 1)) (not (eobp)))
+          (let ((section (magit-current-section)))
+            (when (and section (not (eq section current))
+                       (not (eq (oref section type) 'bp/agent-session-note))
+                       (= (point) (save-excursion
+                                    (goto-char (oref section start))
+                                    (line-beginning-position))))
+              (throw 'found (magit-section-ident section)))))))))
 
 (defun bp/agent-sessions-kill ()
   "Kill the session at point, detach its shared file or link, or release a lock.
@@ -4495,9 +4497,17 @@ prefix argument (UNMARK), always mark read.  The mark also clears on its own
 once you focus the session's buffer.
 
 On a shared-file or external-link row this toggles the unopened highlight
-instead.  After marking an unread file read, move to the next file in the
-same session if there is one.  UNMARK always clears."
+instead.  UNMARK always clears.
+
+Afterwards point moves to the row that was on the next line, wherever the
+re-sort put it, so repeated presses walk down the dashboard."
   (interactive "P")
+  (let ((next-ident (bp/agent-sessions--next-row-ident-at-point)))
+    (bp/agent-sessions--toggle-read-at-point unmark)
+    (bp/agent-sessions--goto-ident next-ident)))
+
+(defun bp/agent-sessions--toggle-read-at-point (unmark)
+  "Toggle the read state of the row at point; see `bp/agent-sessions-mark-unread'."
   (pcase (bp/agent-sessions--link-at-point)
     (`(,_session ,_kind ,link)
      (let ((visited (or (and unmark t) (null (plist-get link :visited-at))))
@@ -4510,14 +4520,11 @@ same session if there is one.  UNMARK always clears."
      (pcase (bp/agent-sessions--file-at-point)
        (`(,_session ,path ,file)
         (let ((visited (or (and unmark t)
-                           (null (plist-get file :visited-at))))
-              (next-ident (bp/agent-sessions--next-file-ident-at-point)))
-          (let ((changed (bp/agent-sessions--set-visited
-                          (lambda (f) (equal (plist-get f :path) path))
-                          visited)))
-            (bp/agent-sessions--refresh)
-            (when (and changed visited next-ident)
-              (bp/agent-sessions--goto-ident next-ident)))
+                           (null (plist-get file :visited-at)))))
+          (bp/agent-sessions--set-visited
+           (lambda (f) (equal (plist-get f :path) path))
+           visited)
+          (bp/agent-sessions--refresh)
           (message (if visited "Marked as read." "Marked as unread."))))
        (_ (bp/agent-sessions--mark-session-unread unmark))))))
 
