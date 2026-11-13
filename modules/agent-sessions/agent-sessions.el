@@ -1050,11 +1050,9 @@ every manually marked row.  Record what was drawn; don't derive it twice.")
 (defun bp/agent-orchestration--messages (id)
   (gethash id bp/agent-orchestration--mail))
 
-(defun bp/agent-orchestration--pending (id &optional types)
-  "Unread messages for ID, optionally filtered to TYPES (a list of strings)."
-  (seq-filter (lambda (m)
-                (and (not (plist-get m :read))
-                     (or (null types) (member (plist-get m :type) types))))
+(defun bp/agent-orchestration--pending (id)
+  "Unread messages for ID."
+  (seq-remove (lambda (m) (plist-get m :read))
               (bp/agent-orchestration--messages id)))
 
 (defun bp/agent-orchestration--pending-count (id)
@@ -6518,35 +6516,38 @@ agent — your coordinator.  You were started with this file as your prompt.
 It is your only channel to the coordinator — do not try to reach a human
 through Slack, a PR comment, or anything else during the run.
 
-  # REQUIRED when you finish, including when you fail or give up.  Send it
-  # exactly once.  --summary is three sentences: what you did, what you found,
-  # what is left.
-  emacs-agent done --summary \"...\" [--files a.el,b.el] [--report path/to/notes.md]
+  # REQUIRED when you finish, including when you fail or give up: your final
+  # report.  Send it exactly once.  The subject starts with \"Done:\" or
+  # \"Failed:\"; the body is three sentences (what you did, what you found,
+  # what is left) and names any file worth reading.
+  emacs-agent send --to \"$EMACS_AGENT_COORDINATOR\" --subject \"Done: ...\" --body \"...\"
 
-  # Blocked on a decision only the coordinator can make.  Blocks until it
-  # answers and prints the answer.
-  emacs-agent ask --question \"...\" [--timeout 600]
+  # Blocked on a decision only the coordinator can make.  Sends a question,
+  # then blocks until mail arrives and prints it.
+  emacs-agent send-and-wait --to \"$EMACS_AGENT_COORDINATOR\" --subject \"...\" --body \"...\" [--timeout 600]
 
   # A progress note, when there is something worth knowing mid-task.  Optional.
-  emacs-agent send --type status --subject \"...\" --body \"...\"
+  emacs-agent send --to \"$EMACS_AGENT_COORDINATOR\" --subject \"...\" --body \"...\"
 
 RULES
 
 - Never ask a question through an interactive prompt (no AskUserQuestion, no
   reading stdin).  Your coordinator is another agent and cannot see a TUI
-  prompt; your turn would hang until a human noticed.  Use `emacs-agent ask'.
-- Failure is still a `done', with a subject that says so.  Never exit silently.
-- After `done', end your turn and sit at your prompt.  Do not poll for more
-  work and do not start something unrelated; further work arrives as new input.
-  Reply to that later mail with the `Reply:' command it includes, which sends an
-  `answer' rather than a second `done'.
+  prompt; your turn would hang until a human noticed.  Use
+  `emacs-agent send-and-wait'.
+- Failure still gets a final report, with a subject that says so.  Never exit
+  silently.
+- After your final report, end your turn and sit at your prompt.  Do not poll
+  for more work and do not start something unrelated; further work arrives as
+  new input.  Reply to that later mail with the `Reply:' command it includes
+  rather than sending a second final report.
 - You may be sharing this worktree with other workers.  Touch only the files
   your task names, and leave git state alone — no `git add', `commit',
   `checkout', `rebase' or `stash' — unless the task says this worktree is
   yours.  The index and HEAD are shared by everyone in a worktree, so staging
   anything would clobber a co-tenant's work in progress.
 - `emacs-share file FILE \"why\"' hands a file to the human in the dashboard.
-  That is for the human, and is not a substitute for reporting `done'.
+  That is for the human, and is not a substitute for your final report.
 
 === YOUR TASK ===
 
@@ -6926,7 +6927,7 @@ Return the new terminal id."
   (puthash id (append (bp/agent-orchestration--messages id) (list message))
            bp/agent-orchestration--mail))
 
-(defun bp/agent-orchestration-send (from-id to type subject body files report)
+(defun bp/agent-orchestration-send (from-id to type subject body)
   "Send a message from FROM-ID to TO, reviving a killed recipient if needed."
   (let ((type (if (or (null type) (string-empty-p type)) "status" type))
         (sender (bp/agent-sessions--session-for-id from-id)))
@@ -6953,8 +6954,7 @@ Return the new terminal id."
                                   :to-key (bp/agent-orchestration--mail-key
                                            current-id recipient)
                                   :type type :subject (string-trim subject)
-                                  :body (or body "") :files (or files "")
-                                  :report (or report "")
+                                  :body (or body "") :files "" :report ""
                                   :sent-at (bp/agent-sessions--now) :read nil)))
             (condition-case err
                 (progn
@@ -6988,53 +6988,17 @@ Return the new terminal id."
                              (error-message-string err)))))
         (format "No live or resumable agent session for recipient %s" to))))))
 
-(defun bp/agent-orchestration-check (id types consume)
+(defun bp/agent-orchestration-check (id consume)
   "Return ID's unread mail, marking it read unless CONSUME is nil.
-TYPES is a comma-separated filter or nil."
+This is also what `emacs-agent wait' polls: any mail ends a wait, so a wait is
+just a check repeated until one returns something."
   (if (null (bp/agent-sessions--session-for-id id))
       (format "No Emacs terminal registered for session id %s" id)
     (bp/agent-orchestration--hydrate id)
-    (let* ((filter (and types (not (string-empty-p types))
-                        (split-string types "," t "[ \t]+")))
-           (unknown (seq-remove
-                     (lambda (candidate)
-                       (member candidate bp/agent-orchestration-message-types))
-                     (or filter '()))))
-      (if unknown
-          (format "Unknown message type(s) in --types: %s" (string-join unknown ", "))
-        (let ((pending (bp/agent-orchestration--pending id filter)))
-          (when consume (bp/agent-orchestration--consume pending))
-          (when pending (bp/agent-sessions--refresh-if-visible))
-          (bp/agent-orchestration--format-messages pending))))))
-
-(defun bp/agent-orchestration-wait-check (id types)
-  "Consume and return all of ID's mail, stopping on TYPES.
-The first output line is `wait: stop', `wait: continue', or `wait: error'.
-TYPES only controls the stop decision; every pending message is returned and
-consumed in the same snapshot so progress cannot become stale or race a later
-terminal message."
-  (if (null (bp/agent-sessions--session-for-id id))
-      (format "wait: error\nNo Emacs terminal registered for session id %s" id)
-    (bp/agent-orchestration--hydrate id)
-    (let* ((filter (and types (not (string-empty-p types))
-                        (split-string types "," t "[ \t]+")))
-           (unknown (seq-remove
-                     (lambda (candidate)
-                       (member candidate bp/agent-orchestration-message-types))
-                     (or filter '())))
-           (pending (bp/agent-orchestration--pending id)))
-      (if unknown
-          (format "wait: error\nUnknown message type(s) in --types: %s"
-                  (string-join unknown ", "))
-        (let ((stop (and pending
-                         (or (null filter)
-                             (seq-some (lambda (message)
-                                         (member (plist-get message :type) filter))
-                                       pending)))))
-          (bp/agent-orchestration--consume pending)
-          (when pending (bp/agent-sessions--refresh-if-visible))
-          (concat (if stop "wait: stop\n" "wait: continue\n")
-                  (bp/agent-orchestration--format-messages pending)))))))
+    (let ((pending (bp/agent-orchestration--pending id)))
+      (when consume (bp/agent-orchestration--consume pending))
+      (when pending (bp/agent-sessions--refresh-if-visible))
+      (bp/agent-orchestration--format-messages pending))))
 
 (defun bp/agent-orchestration-list (id)
   "Describe the workers ID spawned, and ID's own coordinator if it has one."
