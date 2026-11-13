@@ -2,6 +2,7 @@
 # Talk to other agents through the Emacs agent-sessions dashboard.
 #
 #   emacs-agent spawn --type claude|codex --worktree DIR --task TEXT [--title T] [--model M]
+#                     [--from MAILBOX]
 #   emacs-agent send --to ADDRESS [--from DIR] [--type TYPE] --subject S [--body B]
 #   emacs-agent send-and-wait --to ADDRESS --subject S [--body B] [--type TYPE]
 #                             [--timeout SECONDS] [--interval SECONDS]
@@ -16,6 +17,7 @@
 # ADDRESS is a terminal id, an agent session id, an agent-session: link, or a
 # mailbox: a directory standing for a role.  --mailbox and --from take that
 # directory's emacs-lock first, and are refused while someone else holds it.
+# spawn --from makes the worker report to the mailbox rather than this terminal.
 #
 # Every verb but `guide' is an emacsclient call into the Emacs that owns this
 # terminal, and is gated on EMACS_AGENT_SESSION_ID — the id agent-sessions.el
@@ -32,7 +34,7 @@ set -u
 selfdir=$(cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || selfdir=""
 
 usage() {
-  sed -n '3,19p' "$0" | sed -e 's/^# \{0,1\}//'
+  sed -n '3,20p' "$0" | sed -e 's/^# \{0,1\}//'
 }
 
 die() { echo "emacs-agent: $1" >&2; exit 1; }
@@ -184,7 +186,11 @@ case "$verb" in
     [ -n "$type_" ] || die "spawn needs --type (claude, codex, ...)"
     [ -n "$worktree" ] || die "spawn needs --worktree DIR (see 'emacs-agent worktrees')"
     [ -n "$task" ] || die "spawn needs --task TEXT or --task-file FILE"
-    out=$(call "(bp/agent-orchestration-spawn \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$type_")\" \"$(esc "$worktree")\" \"$(esc "$task")\" \"$(esc "$title")\" \"$(esc "$model")\")")
+    if [ -n "$from" ]; then
+      from=$(mailbox_path "$from") || exit 1
+      claim_mailbox "$from" "spawning a worker for this mailbox"
+    fi
+    out=$(call "(bp/agent-orchestration-spawn \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$type_")\" \"$(esc "$worktree")\" \"$(esc "$task")\" \"$(esc "$title")\" \"$(esc "$model")\" \"$(esc "$from")\")")
     report "$out" 'Spawned*'
     ;;
 

@@ -6571,15 +6571,17 @@ RULES
 %s"
           coordinator-id (string-trim task)))
 
-(defun bp/agent-orchestration--write-brief (coordinator-id task)
-  "Write the brief for TASK to a file and return its path."
+(defun bp/agent-orchestration--write-brief (coordinator-id task &optional address)
+  "Write the brief for TASK to a file and return its path.
+ADDRESS is where the worker reports, when that is not COORDINATOR-ID."
   (make-directory bp/agent-orchestration--brief-dir t)
   (let ((path (expand-file-name
                (format "%s-%s.md" coordinator-id
                        (bp/agent-orchestration--next-id "brief"))
                bp/agent-orchestration--brief-dir)))
     (with-temp-file path
-      (insert (bp/agent-orchestration--worker-preamble coordinator-id task)))
+      (insert (bp/agent-orchestration--worker-preamble
+               (or address coordinator-id) task)))
     path))
 
 ;;;; Entry points (called from `bin/emacs-agent')
@@ -6787,10 +6789,14 @@ old customisation keeps working."
       (bp/agent-sessions--set-title-override buf title))))
 
 (defun bp/agent-orchestration-spawn (coordinator-id type worktree task
-                                                    &optional title model)
+                                                    &optional title model from)
   "Start a TYPE agent in WORKTREE on TASK, dispatched by COORDINATOR-ID.
 MODEL, when given, is the model name to launch that agent on, spelled into its
 command line by `bp/agent-orchestration-model-flags'.
+FROM, when non-empty, is a mailbox COORDINATOR-ID holds the lock on: the worker
+then reports to that mailbox instead of to COORDINATOR-ID's terminal, so its
+reports reach whichever conversation plays the role when they arrive.  It is
+still nested under COORDINATOR-ID's terminal in the dashboard.
 Returns a string to print.  WORKTREE must already exist: allocating checkouts
 is the orchestrator's job, not this package's, so that nothing here can leave a
 stray worktree or branch behind."
@@ -6800,10 +6806,14 @@ stray worktree or branch behind."
          (model (string-trim (or model "")))
          (model-flag (and agent (bp/agent-orchestration--model-flag agent model)))
          (dir (and worktree (not (string-empty-p worktree))
-                   (file-name-as-directory (expand-file-name worktree)))))
+                   (file-name-as-directory (expand-file-name worktree))))
+         (claim (and coordinator from (not (string-empty-p from))
+                     (bp/agent-mailbox--claim coordinator-id coordinator from)))
+         (address (if (consp claim) (car claim) coordinator-id)))
     (cond
      ((null coordinator)
       (format "No Emacs terminal registered for session id %s" coordinator-id))
+     ((stringp claim) claim)
      ((null template)
       (format "Unknown agent type `%s'; known types: %s" type
               (mapconcat (lambda (cell) (symbol-name (car cell)))
@@ -6825,7 +6835,8 @@ stray worktree or branch behind."
       "Refusing to spawn a worker with an empty --task")
      (t
       (let* ((trust-note (bp/agent-orchestration--ensure-trusted agent dir))
-             (brief (bp/agent-orchestration--write-brief coordinator-id task))
+             (brief (bp/agent-orchestration--write-brief
+                     coordinator-id task address))
              (label (if (and title (not (string-empty-p (string-trim title))))
                         (string-trim title)
                       (bp/agent-orchestration--task-title task)))
@@ -6837,7 +6848,7 @@ stray worktree or branch behind."
              (buf (save-window-excursion
                     (let ((bp/agent-sessions--extra-terminal-env
                            (list "EMACS_AGENT_ROLE=worker"
-                                 (format "EMACS_AGENT_COORDINATOR=%s" coordinator-id)
+                                 (format "EMACS_AGENT_COORDINATOR=%s" address)
                                  (format "EMACS_AGENT_TASK_BRIEF=%s" brief))))
                       (bp/agent-sessions--create-terminal
                        dir (plist-get (bp/agent-session--repo-info dir) :worktree))))))
@@ -6849,10 +6860,13 @@ stray worktree or branch behind."
             (bp/agent-sessions--terminal-send
              buf (bp/agent-orchestration--launch-command template brief model-flag))
             (bp/agent-sessions--refresh-if-visible)
-            (format "Spawned %s (%s) in %s\nTask: %s\nBrief: %s%s"
+            (format "Spawned %s (%s) in %s\nTask: %s\nBrief: %s%s%s"
                     worker-id
                     (if (string-empty-p model) type (format "%s, %s" type model))
                     (abbreviate-file-name dir) label brief
+                    (if (consp claim)
+                        (format "\nReports to: mailbox %s" address)
+                      "")
                     (if trust-note (concat "\nNote: " trust-note) "")))))))))
 
 (defun bp/agent-orchestration--logged-recipient (value &optional by-agent-session)
