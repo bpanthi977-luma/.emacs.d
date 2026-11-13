@@ -72,10 +72,21 @@ esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 call() {
   reply_file=$(mktemp "${TMPDIR:-/tmp}/emacs-agent-reply.XXXXXX") ||
     die "cannot create a reply file"
-  reply=$(emacsclient -e "(let ((f \"$(esc "$reply_file")\") (r $1)) (let ((coding-system-for-write 'utf-8-unix)) (write-region (if (stringp r) r (prin1-to-string r)) nil f nil 'silent)) nil)" 2>&1) || {
+  expr="(let ((f \"$(esc "$reply_file")\") (r $1)) (let ((coding-system-for-write 'utf-8-unix)) (write-region (if (stringp r) r (prin1-to-string r)) nil f nil 'silent)) nil)"
+  # A refused connection never reached Emacs, so retrying it cannot repeat
+  # anything.  Refusals come in bursts while Emacs is busy and every agent's
+  # watcher keeps polling (the socket's accept queue fills), and one used to
+  # end a 30-day wait.  EMACS_AGENT_CONNECT_TRIES is for tests.
+  tries=${EMACS_AGENT_CONNECT_TRIES:-30}
+  until reply=$(emacsclient -e "$expr" 2>&1); do
+    tries=$((tries - 1))
+    case "$reply" in
+      *"can't connect"*|*"Connection refused"*)
+        [ "$tries" -gt 0 ] && { sleep 1; continue; } ;;
+    esac
     rm -f -- "$reply_file"
     die "could not reach Emacs: $reply"
-  }
+  done
   cat -- "$reply_file"
   rm -f -- "$reply_file"
 }
