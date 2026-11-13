@@ -403,4 +403,263 @@ name, and then succeeds."
         (delete-process proc)
         (kill-buffer buf)))))
 
+(defun bp/lock-test--cli-ok (who &rest args)
+  "Run emacs-lock ARGS as WHO and return just its exit code."
+  (car (apply #'bp/lock-test--run who args)))
+
+;;; Mailboxes
+
+(defvar bp/mailbox-test--dir nil "The mailbox directory of the running test.")
+
+(defmacro bp/mailbox-test-with (&rest body)
+  "Run BODY with a fresh database, a mailbox directory and two sessions.
+Terminal T-A runs conversation A, T-B runs B; neither has a buffer, so
+nothing is pasted anywhere."
+  (declare (indent 0) (debug t))
+  `(bp/lock-test-with-db
+     (let* ((bp/mailbox-test--dir
+             (file-name-as-directory
+              (file-truename (make-temp-file "agent-mailbox-test-" t))))
+            (bp/agent-sessions (make-hash-table :test 'equal))
+            (bp/agent-session-id->buffer (make-hash-table :test 'equal))
+            (bp/agent-orchestration--mail (make-hash-table :test 'equal))
+            (bp/agent-mailboxes--unread nil)
+            (buffers nil))
+       ;; Registry entries need a live buffer, or `--live-entries' prunes
+       ;; them; with no process in it, nothing is ever pasted there.
+       (dolist (spec '(("T-A" "A" "wt-a") ("T-B" "B" "wt-b")))
+         (let ((buf (generate-new-buffer (concat " *mailbox-" (car spec) "*"))))
+           (push buf buffers)
+           (with-current-buffer buf
+             (setq-local bp/agent-session-id (car spec)))
+           (puthash (car spec) buf bp/agent-session-id->buffer)
+           (puthash (car spec) (list :buffer buf :agent-session-id (nth 1 spec)
+                                     :agent-type "claude" :worktree (nth 2 spec))
+                    bp/agent-sessions)))
+       (unwind-protect (progn ,@body)
+         (mapc #'kill-buffer buffers)
+         (delete-directory bp/mailbox-test--dir t)))))
+
+(defun bp/mailbox-test--archive (direction)
+  "The archive files in the test mailbox's mail/DIRECTION, as their contents."
+  (let ((folder (expand-file-name (concat "mail/" direction)
+                                  bp/mailbox-test--dir)))
+    (and (file-directory-p folder)
+         (mapcar (lambda (file)
+                   (with-temp-buffer
+                     (insert-file-contents file)
+                     (buffer-string)))
+                 (directory-files folder t "\\.md\\'")))))
+
+(ert-deftest bp/mailbox-mail-waits-for-the-lock-holder ()
+  (bp/mailbox-test-with
+    (should (string-prefix-p
+             "Sent question to mailbox "
+             (bp/agent-orchestration-send "T-B" bp/mailbox-test--dir
+                                          "question" "Review this" "body")))
+    ;; Nobody holds it yet: the mail is only recorded.
+    (should (string-match-p "do not hold the lock"
+                            (bp/agent-orchestration-check
+                             "T-A" t bp/mailbox-test--dir)))
+    (should (= 0 (bp/lock-test--cli-ok "A" "acquire" bp/mailbox-test--dir)))
+    (let ((out (bp/agent-orchestration-check "T-A" t bp/mailbox-test--dir)))
+      (should (string-prefix-p "messages: 1\n" out))
+      (should (string-match-p "Subject: Review this" out))
+      ;; Answered as the role: the reply carries --from the mailbox.
+      (should (string-match-p
+               (regexp-quote (format "Reply: emacs-agent send --to B --from %s --type answer"
+                                     (shell-quote-argument bp/mailbox-test--dir)))
+               out)))
+    (should (string-prefix-p "messages: 0"
+                             (bp/agent-orchestration-check
+                              "T-A" t bp/mailbox-test--dir)))
+    (should (equal '(("mailbox" 1))
+                   (bp/lock-test--rows
+                    "SELECT to_kind, read_at IS NOT NULL FROM mail")))))
+
+(ert-deftest bp/mailbox-only-its-holder-reads-or-speaks-for-it ()
+  (bp/mailbox-test-with
+    (should (= 0 (bp/lock-test--cli-ok "A" "acquire" bp/mailbox-test--dir)))
+    (bp/agent-orchestration-send "T-A" bp/mailbox-test--dir "status" "note" "")
+    (should (string-match-p "do not hold the lock"
+                            (bp/agent-orchestration-check
+                             "T-B" nil bp/mailbox-test--dir)))
+    (should (string-match-p "do not hold the lock"
+                            (bp/agent-orchestration-send
+                             "T-B" "T-A" "status" "spoof" "" bp/mailbox-test--dir)))
+    (should (equal '((1)) (bp/lock-test--rows "SELECT count(*) FROM mail")))))
+
+(ert-deftest bp/mailbox-must-be-an-existing-directory ()
+  (bp/mailbox-test-with
+    (should (string-match-p
+             "No such mailbox directory"
+             (bp/agent-orchestration-send "T-A" "/no/such/mailbox/" "status"
+                                          "s" "")))
+    (should (null (bp/lock-test--rows "SELECT * FROM mail")))))
+
+(ert-deftest bp/mailbox-sending-as-a-mailbox-files-replies-there ()
+  (bp/mailbox-test-with
+    (should (= 0 (bp/lock-test--cli-ok "A" "acquire" bp/mailbox-test--dir)))
+    (cl-letf (((symbol-function 'bp/agent-orchestration-deliver) #'ignore))
+      (should (string-prefix-p
+               "Sent question to T-B"
+               (bp/agent-orchestration-send "T-A" "T-B" "question" "Which?" "x"
+                                            bp/mailbox-test--dir))))
+    (should (equal `(("mailbox" ,bp/mailbox-test--dir "session" "B"))
+                   (bp/lock-test--rows
+                    "SELECT from_kind, from_key, to_kind, to_key FROM mail")))
+    (let ((out (bp/agent-orchestration-check "T-B" t)))
+      (should (string-match-p
+               (regexp-quote (concat "message from mailbox " bp/mailbox-test--dir
+                                     " (sent by wt-a)"))
+               out))
+      (should (string-match-p
+               (regexp-quote (concat "Reply: emacs-agent send --to "
+                                     (shell-quote-argument bp/mailbox-test--dir)
+                                     " --type answer"))
+               out)))))
+
+(ert-deftest bp/mailbox-archives-incoming-and-outgoing-mail ()
+  (bp/mailbox-test-with
+    (should (= 0 (bp/lock-test--cli-ok "A" "acquire" bp/mailbox-test--dir)))
+    (bp/agent-orchestration-send "T-B" bp/mailbox-test--dir "status" "In" "hello")
+    (cl-letf (((symbol-function 'bp/agent-orchestration-deliver) #'ignore))
+      (bp/agent-orchestration-send "T-A" "T-B" "answer" "Out" "bye"
+                                   bp/mailbox-test--dir))
+    (let ((in (bp/mailbox-test--archive "in"))
+          (out (bp/mailbox-test--archive "out")))
+      (should (= 1 (length in)))
+      (should (string-match-p "^From: session B (terminal T-B)$" (car in)))
+      (should (string-match-p (concat "^To: mailbox "
+                                      (regexp-quote bp/mailbox-test--dir) "$")
+                              (car in)))
+      (should (string-match-p "^Subject: In$" (car in)))
+      (should (string-match-p "\n\nhello\n\\'" (car in)))
+      (should (= 1 (length out)))
+      (should (string-match-p
+               (concat "^From: mailbox " (regexp-quote bp/mailbox-test--dir)
+                       ", session A (terminal T-A)$")
+               (car out)))
+      (should (string-match-p "^To: session B (terminal T-B)$" (car out)))
+      (should (string-match-p "^Type: answer$" (car out))))))
+
+(ert-deftest bp/mailbox-reply-line-says-whether-a-reply-is-expected ()
+  (let ((msg (lambda (type)
+               (bp/agent-orchestration--format-message
+                (list :from nil :from-key '("session" "S") :from-label "s"
+                      :type type :subject "x" :body "" :files "" :report "")))))
+    (should (string-match-p "^Reply: emacs-agent send --to S --type answer"
+                            (funcall msg "question")))
+    (should (string-match-p "^Reply (optional): emacs-agent send --to S --subject"
+                            (funcall msg "status")))
+    (should (string-match-p "^Reply (optional): " (funcall msg "answer")))))
+
+(ert-deftest bp/mailbox-pending-lists-only-mailboxes-without-a-running-listener ()
+  (bp/mailbox-test-with
+    (bp/agent-orchestration-send "T-B" bp/mailbox-test--dir "status" "First" "")
+    (bp/agent-locks--reload)
+    (should (equal (list bp/mailbox-test--dir)
+                   (mapcar (lambda (m) (plist-get m :dir))
+                           (bp/agent-mailboxes--pending))))
+    (should (equal "First" (plist-get (car bp/agent-mailboxes--unread)
+                                      :oldest-subject)))
+    ;; A holder that is not running still leaves it pending, and says so.
+    (should (= 0 (bp/lock-test--cli-ok "A" "acquire" bp/mailbox-test--dir)))
+    (sqlite-execute (bp/agent-sessions--db)
+                    "UPDATE locks SET holder_pid = 999999, holder_pid_start = 'long ago'")
+    (bp/agent-locks--reload)
+    (with-temp-buffer
+      (bp/agent-mailboxes--insert-section)
+      (should (string-match-p "✉1 .*First  — locked by .* (not running)"
+                              (buffer-string))))
+    ;; A running holder collects its own mail: not listed.
+    (sqlite-execute (bp/agent-sessions--db)
+                    "UPDATE locks SET holder_pid = ?, holder_pid_start = ?"
+                    (list (emacs-pid) (bp/agent-locks--pid-start (emacs-pid))))
+    (bp/agent-locks--reload)
+    (should-not (bp/agent-mailboxes--pending))
+    (with-temp-buffer
+      (bp/agent-mailboxes--insert-section)
+      (should (string-empty-p (buffer-string))))))
+
+(defun bp/mailbox-test--agent (who &rest args)
+  "Run emacs-agent ARGS as conversation WHO against a stub emacsclient.
+The stub records the elisp it was asked to evaluate and answers as Emacs
+would on success, so this tests what the shell itself decides.  Returns
+\(EXIT-CODE OUTPUT ELISP)."
+  (let* ((stub-dir (make-temp-file "agent-mailbox-stub-" t))
+         (record (expand-file-name "called" stub-dir))
+         (stub (expand-file-name "emacsclient" stub-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file stub
+            (insert "#!/bin/sh\nprintf '%s' \"$2\" > " (shell-quote-argument record) "\n"
+                    "case \"$2\" in\n"
+                    "  *orchestration-check*) printf '\"messages: 0\"\\n' ;;\n"
+                    "  *) printf '\"Sent ok\"\\n' ;;\n"
+                    "esac\n"))
+          (set-file-modes stub #o755)
+          (let ((process-environment
+                 (cons (concat "PATH=" stub-dir ":" (getenv "PATH"))
+                       (bp/lock-test--env who '("EMACS_AGENT_SESSION_ID=T-1"))))
+                (default-directory (file-name-directory
+                                    (directory-file-name bp/mailbox-test--dir))))
+            (with-temp-buffer
+              (let ((code (apply #'call-process
+                                 (expand-file-name "emacs-agent"
+                                                   bp/agent-sessions--bin-dir)
+                                 nil t nil args)))
+                (list code (buffer-string)
+                      (and (file-exists-p record)
+                           (with-temp-buffer
+                             (insert-file-contents record)
+                             (buffer-string))))))))
+      (delete-directory stub-dir t))))
+
+(ert-deftest bp/mailbox-cli-resolves-paths-and-claims-the-lock ()
+  (bp/mailbox-test-with
+    (let ((relative (concat "./" (file-name-nondirectory
+                                  (directory-file-name bp/mailbox-test--dir)))))
+      ;; A relative --to is resolved in the caller's directory.
+      (pcase-let ((`(,code ,_ ,elisp)
+                   (bp/mailbox-test--agent "A" "send" "--to" relative
+                                           "--subject" "s")))
+        (should (= 0 code))
+        (should (string-match-p (regexp-quote
+                                 (format "\"T-1\" \"%s\"" bp/mailbox-test--dir))
+                                elisp)))
+      ;; --from takes the lock, then names the mailbox to Emacs.
+      (pcase-let ((`(,code ,_ ,elisp)
+                   (bp/mailbox-test--agent "A" "send" "--to" "T-2" "--from"
+                                           relative "--subject" "s")))
+        (should (= 0 code))
+        (should (string-match-p (regexp-quote
+                                 (format "\"%s\")" bp/mailbox-test--dir))
+                                elisp)))
+      (should (equal '(("session" "A"))
+                     (bp/lock-test--rows "SELECT holder_kind, holder_key FROM locks")))
+      ;; Someone else holding it: refused before Emacs is asked anything.
+      (pcase-let ((`(,code ,output ,elisp)
+                   (bp/mailbox-test--agent "B" "wait" "--mailbox" relative
+                                           "--timeout" "0")))
+        (should (= 1 code))
+        (should (string-match-p "held by" output))
+        (should-not elisp))
+      (pcase-let ((`(,code ,_ ,elisp)
+                   (bp/mailbox-test--agent "A" "check" "--mailbox" relative)))
+        (should (= 0 code))
+        (should (string-match-p (regexp-quote
+                                 (format "t \"%s\")" bp/mailbox-test--dir))
+                                elisp)))
+      (pcase-let ((`(,code ,output ,_)
+                   (bp/mailbox-test--agent "A" "send-and-wait" "--to" "T-2"
+                                           "--from" relative "--subject" "s")))
+        (should (= 1 code))
+        (should (string-match-p "does not take --from" output)))
+      (pcase-let ((`(,code ,output ,_)
+                   (bp/mailbox-test--agent "A" "send" "--to" "./no-such-mailbox"
+                                           "--subject" "s")))
+        (should (= 1 code))
+        (should (string-match-p "no such mailbox directory" output))))))
+
 ;;; agent-sessions-lock-test.el ends here
