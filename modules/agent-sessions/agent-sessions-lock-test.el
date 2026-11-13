@@ -668,4 +668,53 @@ would on success, so this tests what the shell itself decides.  Returns
                    (bp/agent-mailboxes--start-prompt
                     (expand-file-name "~/dev/agents/luffa/"))))))
 
+(defun bp/mailbox-test--spawn (from)
+  "Spawn a worker from T-A with FROM as its mailbox, launching nothing.
+Return (OUTPUT ENVIRONMENT BRIEF-TEXT) or (OUTPUT nil nil) on refusal."
+  (let* ((bp/agent-orchestration--brief-dir (make-temp-file "agent-briefs-" t))
+         (worktree (make-temp-file "agent-worktree-" t))
+         (worker (generate-new-buffer " *mailbox-worker*"))
+         env)
+    (unwind-protect
+        (cl-letf (((symbol-function 'bp/agent-orchestration--ensure-trusted) #'ignore)
+                  ((symbol-function 'bp/agent-sessions--terminal-send) #'ignore)
+                  ((symbol-function 'bp/agent-sessions--set-title-override) #'ignore)
+                  ((symbol-function 'bp/agent-sessions--create-terminal)
+                   (lambda (&rest _)
+                     (setq env bp/agent-sessions--extra-terminal-env)
+                     (with-current-buffer worker
+                       (setq-local bp/agent-session-id "T-W"))
+                     worker)))
+          (let ((out (bp/agent-orchestration-spawn "T-A" "claude" worktree
+                                                   "Do the thing" "" "" from)))
+            (list out env
+                  (let ((brief (car (directory-files
+                                     bp/agent-orchestration--brief-dir t "\\.md\\'"))))
+                    (and brief (with-temp-buffer
+                                 (insert-file-contents brief)
+                                 (buffer-string)))))))
+      (kill-buffer worker)
+      (delete-directory worktree t)
+      (delete-directory bp/agent-orchestration--brief-dir t))))
+
+(ert-deftest bp/mailbox-spawned-worker-reports-to-the-mailbox ()
+  (bp/mailbox-test-with
+    ;; Without the lock, nothing is spawned.
+    (pcase-let ((`(,out ,env ,_) (bp/mailbox-test--spawn bp/mailbox-test--dir)))
+      (should (string-match-p "do not hold the lock" out))
+      (should-not env))
+    (should (= 0 (bp/lock-test--cli-ok "A" "acquire" bp/mailbox-test--dir)))
+    (pcase-let ((`(,out ,env ,brief) (bp/mailbox-test--spawn bp/mailbox-test--dir)))
+      (should (string-match-p (concat "Reports to: mailbox "
+                                      (regexp-quote bp/mailbox-test--dir))
+                              out))
+      (should (member (concat "EMACS_AGENT_COORDINATOR=" bp/mailbox-test--dir) env))
+      (should (string-match-p (concat "Your coordinator   "
+                                      (regexp-quote bp/mailbox-test--dir))
+                              brief)))
+    ;; Without --from the terminal stays the coordinator.
+    (pcase-let ((`(,out ,env ,_) (bp/mailbox-test--spawn "")))
+      (should-not (string-match-p "Reports to" out))
+      (should (member "EMACS_AGENT_COORDINATOR=T-A" env)))))
+
 ;;; agent-sessions-lock-test.el ends here
