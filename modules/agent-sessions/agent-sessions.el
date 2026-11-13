@@ -7694,7 +7694,7 @@ nothing happens.  Return non-nil when LOCK was released."
       (insert "\n"))))
 
 (defun bp/agent-mailboxes-start (dir)
-  "Start an agent in mailbox DIR, told to read its `context.md'.
+  "Start an agent in mailbox DIR, told to read `../playbook.md' and `context.md'.
 The agent type is asked for; DIR is the working directory.  The agent takes
 the mailbox's lock with its first `emacs-agent wait --mailbox', which is when
 its backlog reaches it."
@@ -7715,7 +7715,7 @@ its backlog reaches it."
                   (format "%s.md" (bp/agent-orchestration--next-id "mailbox"))
                   bp/agent-orchestration--brief-dir)))
     (make-directory bp/agent-orchestration--brief-dir t)
-    (with-temp-file prompt (insert "read context.md"))
+    (with-temp-file prompt (insert "read ../playbook.md and then read context.md"))
     (let ((buf (bp/agent-sessions--create-terminal
                 dir (or (plist-get (bp/agent-session--repo-info dir) :worktree)
                         name))))

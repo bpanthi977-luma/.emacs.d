@@ -335,7 +335,8 @@ emacs-agent send --to <address> --from ~/agents/reviewer --subject "..."
   `--from`: your watcher collects the reply.
 - **No listener.** Mail to a mailbox nobody is listening on queues. The
   dashboard lists such mailboxes at the top, and the human starts an agent
-  there (`RET`), which is launched in DIR with the prompt `read context.md`.
+  there (`RET`), which is launched in DIR with the prompt
+  `read ../playbook.md and then read context.md`.
 - **History.** Emacs writes every message into the mailbox as well: incoming to
   `DIR/mail/in/<timestamp>.md`, sent as the mailbox to `DIR/mail/out/`. Read
   those for the role's past; the mail itself still arrives through `wait`.
