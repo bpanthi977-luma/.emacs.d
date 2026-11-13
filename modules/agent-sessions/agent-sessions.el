@@ -72,16 +72,16 @@ Populated lazily: an entry only exists once a hook event has fired for it.")
 (defvar bp/agent-session-counter 0)
 
 (defconst bp/agent-orchestration-message-types
-  '("status" "done" "blocked" "question" "answer")
+  '("status" "question" "answer")
   "The types an inter-agent message may carry.
-Deliberately short: `done' is the one an orchestrator waits on, `blocked' and
-`question' are the two ways a worker stops short of it, `answer' closes a
-question or replies to later mail delivered to a resting worker, and `status'
-is everything else.  A larger vocabulary would have to earn itself by changing
-what some command *does*, not just what a row says.")
+The line they draw is whether the sender expects a reply: a `question' does,
+and its `Reply:' line says so; an `answer' closes one; `status' is everything
+else, including a worker reporting that it finished or is stuck.  A larger
+vocabulary would have to earn itself by changing what some command *does*, not
+just what a row says.")
 
 (defconst bp/agent-orchestration-actionable-message-types
-  '("done" "blocked" "question" "answer")
+  '("question" "answer")
   "Mail types important enough to steer a running Codex turn.
 Plain `status' mail waits for the recipient to become idle, unless actionable
 mail is queued with it, so progress chatter cannot repeatedly steer active
@@ -6014,8 +6014,13 @@ conversation is live again, named but not addressable when it is not."
             (let ((report (plist-get msg :report)))
               (if (and report (not (string-empty-p report)))
                   (format "Report: %s\n" report) ""))
-            (cond (reply-to
+            (cond ((and reply-to (equal (plist-get msg :type) "question"))
                    (format "Reply: emacs-agent send --to %s --type answer --subject \"...\"\n"
+                           reply-to))
+                  ;; Only a question waits on its reply; offering the command
+                  ;; anyway keeps a follow-up one copy away.
+                  (reply-to
+                   (format "Reply (optional): emacs-agent send --to %s --subject \"...\"\n"
                            reply-to))
                   (from-user "Reply: none needed; tell the user in your normal output.\n")
                   (t "Reply: the sender's terminal is not live here; nothing to reply to.\n")))))
