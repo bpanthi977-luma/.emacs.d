@@ -59,18 +59,23 @@ need_session() {
 # Escape a value for interpolation into an elisp string literal.
 esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
-# Turn emacsclient's printed elisp string back into plain text.
-unquote() {
-  printf '%s' "$1" | sed -e 's/^"//' -e 's/"$//' \
-    -e 's/\\n/\
-/g' -e 's/\\t/	/g' -e 's/\\"/"/g' -e 's/\\\\/\\/g'
-}
-
 # call ELISP -> prints the returned string; non-zero only when Emacs is unreachable.
+#
+# The reply comes back through a file, not emacsclient's output.  Emacs sends a
+# long reply as several protocol lines, and emacsclient parses each read() as
+# if it held whole lines; when a read ends mid-line, the rest of the reply is
+# printed as "*ERROR*: Unknown message: ..." with its quoting left in (spaces
+# as "&_").  Mail bodies are long enough to hit this.  The wrapper is inline
+# so it needs nothing loaded in Emacs beyond the entry point itself.
 call() {
-  reply=$(emacsclient -e "$1" 2>&1) ||
+  reply_file=$(mktemp "${TMPDIR:-/tmp}/emacs-agent-reply.XXXXXX") ||
+    die "cannot create a reply file"
+  reply=$(emacsclient -e "(let ((f \"$(esc "$reply_file")\") (r $1)) (let ((coding-system-for-write 'utf-8-unix)) (write-region (if (stringp r) r (prin1-to-string r)) nil f nil 'silent)) nil)" 2>&1) || {
+    rm -f -- "$reply_file"
     die "could not reach Emacs: $reply"
-  unquote "$reply"
+  }
+  cat -- "$reply_file"
+  rm -f -- "$reply_file"
 }
 
 # An entry point's failures come back as text, so recognise the shapes that
