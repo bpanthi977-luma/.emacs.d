@@ -4486,11 +4486,13 @@ holding sessions is left alone; `F' deletes it after confirmation."
           (bp/agent-sessions--goto-session-id nearby-id))))))
 
 (defun bp/agent-sessions-mark-unread (&optional unmark)
-  "Mark the session at point as unread — i.e. needing attention.
-Gives the row the same highlight, `●' marker, sort priority and `N'/`P'
-reachability a hook-reported needs-attention has, for sessions you want to
-come back to yourself.  With a prefix argument (UNMARK), clear the mark.
-The mark also clears on its own once you focus the session's buffer.
+  "Toggle the session at point between unread (needing attention) and read.
+Marking unread gives the row the same highlight, `●' marker, sort priority
+and `N'/`P' reachability a hook-reported needs-attention has, for sessions
+you want to come back to yourself.  On a row that already reads as unread,
+whether marked here or reported by its agent, this marks it read.  With a
+prefix argument (UNMARK), always mark read.  The mark also clears on its own
+once you focus the session's buffer.
 
 On a shared-file or external-link row this toggles the unopened highlight
 instead.  After marking an unread file read, move to the next file in the
@@ -4520,15 +4522,27 @@ same session if there is one.  UNMARK always clears."
        (_ (bp/agent-sessions--mark-session-unread unmark))))))
 
 (defun bp/agent-sessions--mark-session-unread (unmark)
-  "Set or clear the unread mark on the session row at point."
+  "Toggle the session row at point between unread and read.
+A row reads as unread when it carries the manual mark or its agent reported
+needs-attention; marking it read clears both, just as focusing it does
+\(`bp/agent-session--clear-attention-on-focus').  UNMARK always marks read."
   (let* ((session (bp/agent-sessions--session-at-point))
          (buf (and session (plist-get session :buffer))))
     (if (not (buffer-live-p buf))
         (message "No session at point.")
-      (with-current-buffer buf
-        (setq-local bp/agent-session--marked-unread (not unmark)))
-      (bp/agent-sessions--refresh)
-      (message (if unmark "Unread mark cleared." "Marked as needing attention.")))))
+      (let* ((id (buffer-local-value 'bp/agent-session-id buf))
+             (entry (and id (gethash id bp/agent-sessions)))
+             (attention (and entry (eq (plist-get entry :status)
+                                       'needs-attention)))
+             (read (or unmark attention
+                       (buffer-local-value 'bp/agent-session--marked-unread
+                                           buf))))
+        (with-current-buffer buf
+          (setq-local bp/agent-session--marked-unread (not read)))
+        (when (and read attention)
+          (puthash id (plist-put entry :status 'stopped) bp/agent-sessions))
+        (bp/agent-sessions--refresh)
+        (message (if read "Marked as read." "Marked as unread."))))))
 
 (defun bp/agent-sessions-branch ()
   "Branch (fork) the agent session at point into a new session.
