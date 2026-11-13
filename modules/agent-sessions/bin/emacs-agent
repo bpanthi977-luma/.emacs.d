@@ -3,8 +3,8 @@
 #
 #   emacs-agent spawn --type claude|codex --worktree DIR --task TEXT [--title T] [--model M]
 #                     [--from MAILBOX]
-#   emacs-agent send --to ADDRESS [--from DIR] [--type TYPE] --subject S [--body B]
-#   emacs-agent send-and-wait --to ADDRESS --subject S [--body B] [--type TYPE]
+#   emacs-agent send --to ADDRESS [--from DIR] [--type TYPE] --subject S [--body B | <stdin]
+#   emacs-agent send-and-wait --to ADDRESS --subject S [--body B | <stdin] [--type TYPE]
 #                             [--timeout SECONDS] [--interval SECONDS]
 #   emacs-agent check [--mailbox DIR] [--peek]
 #   emacs-agent wait [--mailbox DIR] [--timeout SECONDS] [--interval SECONDS]
@@ -18,6 +18,8 @@
 # mailbox: a directory standing for a role.  --mailbox and --from take that
 # directory's emacs-lock first, and are refused while someone else holds it.
 # spawn --from makes the worker report to the mailbox rather than this terminal.
+# Without --body, send and send-and-wait read the body from stdin when it is a
+# pipe or a file (a heredoc, `cmd |'), never from a terminal or a socket.
 #
 # Every verb but `guide' is an emacsclient call into the Emacs that owns this
 # terminal, and is gated on EMACS_AGENT_SESSION_ID — the id agent-sessions.el
@@ -34,7 +36,7 @@ set -u
 selfdir=$(cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || selfdir=""
 
 usage() {
-  sed -n '3,20p' "$0" | sed -e 's/^# \{0,1\}//'
+  sed -n '3,22p' "$0" | sed -e 's/^# \{0,1\}//'
 }
 
 die() { echo "emacs-agent: $1" >&2; exit 1; }
@@ -92,7 +94,7 @@ verb=${1:-}
 shift 2>/dev/null || true
 case "$verb" in -h|--help|help) usage; exit 0 ;; esac
 
-type_=""; to=""; subject=""; body=""; from=""; mailbox=""
+type_=""; to=""; subject=""; body=""; body_given=""; from=""; mailbox=""
 worktree=""; task=""; title=""; model=""
 timeout=90; interval=3; peek=""; main=""
 
@@ -103,7 +105,7 @@ while [ $# -gt 0 ]; do
     --from) from=${2:-}; shift 2 ;;
     --mailbox) mailbox=${2:-}; shift 2 ;;
     --subject) subject=${2:-}; shift 2 ;;
-    --body) body=${2:-}; shift 2 ;;
+    --body) body=${2:-}; body_given=1; shift 2 ;;
     --worktree) worktree=${2:-}; shift 2 ;;
     --task) task=${2:-}; shift 2 ;;
     --task-file) task=$(cat -- "${2:-}") || die "cannot read --task-file ${2:-}"; shift 2 ;;
@@ -145,6 +147,15 @@ claim_mailbox() { # claim_mailbox DIR WHY
     printf '%s\n' "$lock_out" >&2
     exit "$status"
   }
+}
+
+# Without --body, take the body from stdin, but only when stdin is a pipe or a
+# file: agents naturally write `send ... <<EOF', and send used to drop that
+# body silently.  A terminal would wait for typing, and an agent harness's
+# stdin can be a socket that never closes (Claude Code's is), so neither is read.
+stdin_body() {
+  [ -z "$body_given" ] || return 0
+  if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then body=$(cat); fi
 }
 
 do_send() { # do_send TO TYPE SUBJECT BODY [FROM]
@@ -208,6 +219,7 @@ case "$verb" in
       from=$(mailbox_path "$from") || exit 1
       claim_mailbox "$from" "sending as this mailbox"
     fi
+    stdin_body
     do_send "$to" "$type_" "$subject" "$body" "$from"
     ;;
 
@@ -221,6 +233,7 @@ case "$verb" in
     [ -z "$mailbox" ] || die "send-and-wait does not take --mailbox"
     ! is_path "$to" || to=$(mailbox_path "$to") || exit 1
     [ -n "$type_" ] || type_=question
+    stdin_body
     do_send "$to" "$type_" "$subject" "$body" || exit 1
     poll "$timeout" "$interval"
     ;;
