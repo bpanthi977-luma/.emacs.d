@@ -5971,6 +5971,7 @@ message is gone, but the identity it was filed under is not."
 (defun bp/agent-orchestration--sender-address (msg)
   "The durable address for replying to MSG, or its live terminal id."
   (pcase (plist-get msg :from-key)
+    (`("mailbox" ,dir) dir)
     (`("session" ,session-id) session-id)
     (_ (bp/agent-orchestration--sender-terminal msg))))
 
@@ -5992,12 +5993,25 @@ A message restored from the database may have outlived the terminal that sent
 it, so the sender is resolved through its durable key: answerable when that
 conversation is live again, named but not addressable when it is not."
   (let* ((from-user (equal (car (plist-get msg :from-key)) "user"))
+         (from-mailbox (bp/agent-mailbox--of-key (plist-get msg :from-key)))
+         (to-mailbox (bp/agent-mailbox--of-key (plist-get msg :to-key)))
          (live (bp/agent-orchestration--sender-terminal msg))
          (reply-to (bp/agent-orchestration--sender-address msg))
+         ;; Mail read from a mailbox is answered as that mailbox, so the
+         ;; reply reaches the role rather than this one conversation.
+         (reply-to (and reply-to
+                        (concat (shell-quote-argument reply-to)
+                                (if to-mailbox
+                                    (concat " --from "
+                                            (shell-quote-argument to-mailbox))
+                                  ""))))
          (label (or (plist-get msg :from-label) (plist-get msg :from) "unknown")))
     (concat (format "--- $orca (/orca) message from %s%s [%s]\n"
-                    (or live label)
-                    (cond (live (bp/agent-orchestration--describe-sender live))
+                    (cond (from-mailbox (concat "mailbox " from-mailbox))
+                          (live live)
+                          (t label))
+                    (cond (from-mailbox (format " (sent by %s)" label))
+                          (live (bp/agent-orchestration--describe-sender live))
                           ;; Sent from the dashboard, e.g. a lock notice:
                           ;; there never was a terminal to be gone.
                           (from-user " (via the agent-sessions dashboard)")
@@ -6927,10 +6941,91 @@ Return the new terminal id."
   (puthash id (append (bp/agent-orchestration--messages id) (list message))
            bp/agent-orchestration--mail))
 
-(defun bp/agent-orchestration-send (from-id to type subject body)
-  "Send a message from FROM-ID to TO, reviving a killed recipient if needed."
-  (let ((type (if (or (null type) (string-empty-p type)) "status" type))
-        (sender (bp/agent-sessions--session-for-id from-id)))
+;;;; Mailboxes
+;; A mailbox is a directory standing for a role whose agent is restarted with
+;; fresh conversations.  Mail to it is filed under ("mailbox" DIR) and waits
+;; there; whoever holds DIR's `emacs-lock' reads it with `emacs-agent wait
+;; --mailbox' and may send as it with `--from'.  Delivery is pull-only, so none
+;; of the push or revive machinery above applies.  See "Mailboxes" in CLAUDE.md.
+
+(defun bp/agent-mailbox--path (dir)
+  "DIR as a mailbox key, or nil when it is not an existing absolute directory.
+The true name with a trailing slash: the spelling `emacs-lock' stores for a
+directory lock, so the two compare as strings.  `emacs-agent' resolves
+relative paths before calling, since only it knows the caller's directory."
+  (when (and (stringp dir) (file-name-absolute-p dir) (file-directory-p dir))
+    (file-name-as-directory (file-truename dir))))
+
+(defun bp/agent-mailbox--of-key (key)
+  "The mailbox directory durable mail KEY names, or nil for any other key."
+  (pcase key (`("mailbox" ,dir) dir)))
+
+(defun bp/agent-mailbox--holds-p (id session dir)
+  "Non-nil when terminal ID's conversation holds the lock on mailbox DIR.
+Asked of the database rather than the working copy: the CLI took the lock a
+moment ago, and nothing has reloaded since."
+  (sqlite-select (bp/agent-sessions--db)
+                 "SELECT 1 FROM locks
+                   WHERE name = ? AND holder_kind = ? AND holder_key = ?"
+                 (cons dir (bp/agent-orchestration--mail-key id session))))
+
+(defun bp/agent-mailbox--claim (id session mailbox)
+  "Resolve MAILBOX for terminal ID, or return why it cannot use it.
+Returns (DIR) on success and a string on failure.  `emacs-agent' acquires the
+lock before calling; this re-check is what stops a hand-written `emacsclient'
+call reading or speaking for a role it does not hold."
+  (let ((dir (bp/agent-mailbox--path mailbox)))
+    (cond ((null dir) (format "No such mailbox directory: %s" mailbox))
+          ((not (bp/agent-mailbox--holds-p id session dir))
+           (format "You do not hold the lock on mailbox %s; run `emacs-lock acquire %s' first"
+                   dir (shell-quote-argument dir)))
+          (t (list dir)))))
+
+(defun bp/agent-mailbox--unread (dir)
+  "Mailbox DIR's unread messages, oldest first, read from the database."
+  (mapcar
+   (pcase-lambda (`(,mid ,fkind ,fkey ,flabel ,type ,subject ,body ,files
+                         ,report ,sent))
+     (list :id mid :from nil :from-key (list fkind fkey) :from-label flabel
+           :to nil :to-key (list "mailbox" dir) :type type :subject subject
+           :body body :files files :report report :sent-at sent :read nil))
+   (sqlite-select (bp/agent-sessions--db)
+                  "SELECT id, from_kind, from_key, from_label, type, subject,
+                          body, files, report, sent_at
+                     FROM mail
+                    WHERE to_kind = 'mailbox' AND to_key = ? AND read_at IS NULL
+                    ORDER BY sent_at, rowid"
+                  (list dir))))
+
+(defun bp/agent-mailbox--check (id session mailbox consume)
+  "MAILBOX's unread mail for its lock holder ID, marked read when CONSUME."
+  (let ((claim (bp/agent-mailbox--claim id session mailbox)))
+    (if (stringp claim)
+        claim
+      (let ((pending (bp/agent-mailbox--unread (car claim))))
+        (when consume (bp/agent-orchestration--consume pending))
+        (when pending (bp/agent-sessions--refresh-if-visible))
+        (bp/agent-orchestration--format-messages pending)))))
+
+(defun bp/agent-mailbox--send (msg dir)
+  "File MSG in mailbox DIR and return what `send' prints.
+Only recorded: the holder collects it with its next wait."
+  (plist-put msg :to-key (list "mailbox" dir))
+  (bp/agent-orchestration--mail-insert msg)
+  (bp/agent-sessions--refresh-if-visible)
+  (format "Sent %s to mailbox %s" (plist-get msg :type) dir))
+
+(defun bp/agent-orchestration-send (from-id to type subject body &optional from)
+  "Send a message from FROM-ID to TO, reviving a killed recipient if needed.
+TO may be a mailbox directory.  FROM, when non-empty, is a mailbox FROM-ID
+holds the lock on; the message is then sent as that mailbox, so replies to it
+are filed there."
+  (let* ((type (if (or (null type) (string-empty-p type)) "status" type))
+         (sender (bp/agent-sessions--session-for-id from-id))
+         (from (and from (not (string-empty-p from)) from))
+         (claim (and sender from (bp/agent-mailbox--claim from-id sender from)))
+         (to-mailbox (and to (string-prefix-p "/" to)
+                          (bp/agent-mailbox--path to))))
     (cond
      ((null sender)
       (format "No Emacs terminal registered for session id %s" from-id))
@@ -6938,16 +7033,32 @@ Return the new terminal id."
       (format "Unknown message type `%s'; known types: %s" type
               (string-join bp/agent-orchestration-message-types ", ")))
      ((or (null to) (string-empty-p to))
-      "A message needs a --to (an Emacs terminal id)")
+      "A message needs a --to (an Emacs terminal id or a mailbox directory)")
+     ((and (string-prefix-p "/" to) (null to-mailbox))
+      (format "No such mailbox directory: %s" to))
      ((or (null subject) (string-empty-p (string-trim subject)))
       "A message needs a --subject")
+     ((stringp claim) claim)
+     (to-mailbox
+      (bp/agent-mailbox--send
+       (list :id (bp/agent-orchestration--next-id "msg")
+             :from from-id
+             :from-key (if claim (list "mailbox" (car claim))
+                         (bp/agent-orchestration--mail-key from-id sender))
+             :from-label (bp/agent-sessions--session-short-label sender)
+             :to nil :type type :subject (string-trim subject)
+             :body (or body "") :files "" :report ""
+             :sent-at (bp/agent-sessions--now) :read nil)
+       to-mailbox))
      (t
       (if-let ((resolved (bp/agent-orchestration--resolve-recipient to)))
           (pcase-let* ((`(,current-id ,recipient ,revive-p) resolved)
                        (msg (list :id (bp/agent-orchestration--next-id "msg")
                                   :from from-id
-                                  :from-key (bp/agent-orchestration--mail-key
-                                             from-id sender)
+                                  :from-key
+                                  (if claim (list "mailbox" (car claim))
+                                    (bp/agent-orchestration--mail-key
+                                     from-id sender))
                                   :from-label (bp/agent-sessions--session-short-label
                                                sender)
                                   :to current-id
@@ -6988,17 +7099,23 @@ Return the new terminal id."
                              (error-message-string err)))))
         (format "No live or resumable agent session for recipient %s" to))))))
 
-(defun bp/agent-orchestration-check (id consume)
+(defun bp/agent-orchestration-check (id consume &optional mailbox)
   "Return ID's unread mail, marking it read unless CONSUME is nil.
-This is also what `emacs-agent wait' polls: any mail ends a wait, so a wait is
-just a check repeated until one returns something."
-  (if (null (bp/agent-sessions--session-for-id id))
-      (format "No Emacs terminal registered for session id %s" id)
-    (bp/agent-orchestration--hydrate id)
-    (let ((pending (bp/agent-orchestration--pending id)))
-      (when consume (bp/agent-orchestration--consume pending))
-      (when pending (bp/agent-sessions--refresh-if-visible))
-      (bp/agent-orchestration--format-messages pending))))
+With MAILBOX, return that mailbox's mail instead, which ID must hold the lock
+on.  This is also what `emacs-agent wait' polls: any mail ends a wait, so a
+wait is just a check repeated until one returns something."
+  (let ((session (bp/agent-sessions--session-for-id id)))
+    (cond
+     ((null session)
+      (format "No Emacs terminal registered for session id %s" id))
+     ((and mailbox (not (string-empty-p mailbox)))
+      (bp/agent-mailbox--check id session mailbox consume))
+     (t
+      (bp/agent-orchestration--hydrate id)
+      (let ((pending (bp/agent-orchestration--pending id)))
+        (when consume (bp/agent-orchestration--consume pending))
+        (when pending (bp/agent-sessions--refresh-if-visible))
+        (bp/agent-orchestration--format-messages pending))))))
 
 (defun bp/agent-orchestration-list (id)
   "Describe the workers ID spawned, and ID's own coordinator if it has one."
