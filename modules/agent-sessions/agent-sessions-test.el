@@ -1042,6 +1042,40 @@
       (should (eq (lookup-key bp/agent-sessions-mode-map (kbd "m"))
                   (lookup-key bp/agent-sessions-mode-map (kbd "u")))))))
 
+(ert-deftest bp/agent-sessions-mark-unread-toggles-a-session-row ()
+  (let ((buf (generate-new-buffer " *agent-session-toggle*"))
+        (bp/agent-sessions (make-hash-table :test #'equal)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'bp/agent-sessions--link-at-point) #'ignore)
+                  ((symbol-function 'bp/agent-sessions--file-at-point) #'ignore)
+                  ((symbol-function 'bp/agent-sessions--session-at-point)
+                   (lambda () (list :buffer buf)))
+                  ((symbol-function 'bp/agent-sessions--refresh) #'ignore))
+          (with-current-buffer buf (setq-local bp/agent-session-id "s-1"))
+          (puthash "s-1" (list :status 'stopped) bp/agent-sessions)
+          (cl-flet ((marked ()
+                      (buffer-local-value 'bp/agent-session--marked-unread buf)))
+            ;; Read -> unread -> read.
+            (bp/agent-sessions-mark-unread)
+            (should (marked))
+            (bp/agent-sessions-mark-unread)
+            (should-not (marked))
+            ;; An agent-reported needs-attention reads as unread: `u' marks it
+            ;; read the way focusing would, without setting the manual mark.
+            (puthash "s-1" (list :status 'needs-attention) bp/agent-sessions)
+            (bp/agent-sessions-mark-unread)
+            (should-not (marked))
+            (should (eq 'stopped (plist-get (gethash "s-1" bp/agent-sessions)
+                                            :status)))
+            ;; The prefix argument always marks read.
+            (bp/agent-sessions-mark-unread)
+            (should (marked))
+            (bp/agent-sessions-mark-unread t)
+            (should-not (marked))
+            (bp/agent-sessions-mark-unread t)
+            (should-not (marked))))
+      (kill-buffer buf))))
+
 (ert-deftest bp/agent-sessions-share-link-validates-kind-and-url ()
   (let ((session (list :agent-session-id "thread-1"))
         refreshed)
