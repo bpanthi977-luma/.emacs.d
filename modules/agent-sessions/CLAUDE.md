@@ -211,7 +211,9 @@ plist — never mutate the registry entry from the render path. It clears the
 same way a real one does, by focusing the session, and is deliberately not
 persisted: it's session state, which by the rule above evaporates on restart. `u` toggles: on a row that reads as unread (the mark, or a hook-reported
 needs-attention) it marks read exactly as focusing would, so one key undoes
-whichever made the row light up.
+whichever made the row light up. It then moves to the row that was on the
+next line, by identity captured *before* the toggle: a re-sort can move the
+toggled row, so "one line down after refresh" would land somewhere arbitrary.
 
 **A row with no registry entry names whatever is running, from the kernel.**
 Hooks can't be relied on to say what a terminal is running, because Codex
