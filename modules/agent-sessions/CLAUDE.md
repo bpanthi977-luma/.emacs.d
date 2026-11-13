@@ -1022,6 +1022,15 @@ an explicit `M-x`. Point users there rather than editing the JSON by hand.
 
 ## Editing
 
+**A long reply must not come back through emacsclient's stdout.** Emacs
+splits a long reply into several `-print-nonl` protocol lines, and emacsclient
+parses each `recv()` as whole lines, so a read that ends mid-line prints the
+rest as `*ERROR*: Unknown message: …` with spaces still quoted as `&_`. It is
+timing-dependent: mail bodies of a few KB hit it. `emacs-agent`'s `call` has
+Emacs `write-region` the reply to a temp file and prints that instead.
+`emacs-share`'s replies are one short line and still use stdout; move it over
+too if it ever returns anything long.
+
 **A schema addition needs the load-time re-migration to be reachable.**
 `--db` runs the schema only when it *opens* the file and then caches the handle
 for the life of the Emacs, so adding a table left every running Emacs querying
