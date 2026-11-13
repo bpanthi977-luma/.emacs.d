@@ -619,6 +619,39 @@ reads Emacs's answer from, as named at the head of the elisp it sends.")
               (should (equal text (buffer-string))))))
       (delete-directory stub-dir t))))
 
+(defvar bp/mailbox-test--stdin nil
+  "File `bp/mailbox-test--agent' feeds emacs-agent as stdin; nil for /dev/null.")
+
+(ert-deftest bp/agent-cli-send-reads-the-body-from-stdin-without-body ()
+  (bp/mailbox-test-with
+    (let ((stdin (make-temp-file "agent-send-stdin-" nil nil
+                                 "piped \"body\"\n- second line")))
+      (unwind-protect
+          (progn
+            ;; A heredoc or pipe stands in for --body.
+            (pcase-let ((`(,code ,_ ,elisp)
+                         (let ((bp/mailbox-test--stdin stdin))
+                           (bp/mailbox-test--agent "A" "send" "--to" "T-2"
+                                                   "--subject" "s"))))
+              (should (= 0 code))
+              (should (string-match-p
+                       (regexp-quote "\"s\" \"piped \\\"body\\\"\n- second line\"")
+                       elisp)))
+            ;; An explicit --body wins, and stdin is not read.
+            (pcase-let ((`(,code ,_ ,elisp)
+                         (let ((bp/mailbox-test--stdin stdin))
+                           (bp/mailbox-test--agent "A" "send" "--to" "T-2"
+                                                   "--subject" "s" "--body" "given"))))
+              (should (= 0 code))
+              (should (string-match-p (regexp-quote "\"s\" \"given\"") elisp)))
+            ;; Neither pipe nor file (here /dev/null): an empty body, at once.
+            (pcase-let ((`(,code ,_ ,elisp)
+                         (bp/mailbox-test--agent "A" "send" "--to" "T-2"
+                                                 "--subject" "s")))
+              (should (= 0 code))
+              (should (string-match-p (regexp-quote "\"s\" \"\"") elisp))))
+        (delete-file stdin)))))
+
 (defun bp/mailbox-test--agent (who &rest args)
   "Run emacs-agent ARGS as conversation WHO against a stub emacsclient.
 The stub records the elisp it was asked to evaluate and answers as Emacs
@@ -646,7 +679,7 @@ would on success, so this tests what the shell itself decides.  Returns
               (let ((code (apply #'call-process
                                  (expand-file-name "emacs-agent"
                                                    bp/agent-sessions--bin-dir)
-                                 nil t nil args)))
+                                 bp/mailbox-test--stdin t nil args)))
                 (list code (buffer-string)
                       (and (file-exists-p record)
                            (with-temp-buffer
