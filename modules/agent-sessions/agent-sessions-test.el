@@ -1009,7 +1009,7 @@
                    (list :agent-type "codex" :agent-sid "unused"))))
       (delete-directory config t))))
 
-(ert-deftest bp/agent-sessions-mark-read-advances-within-session ()
+(ert-deftest bp/agent-sessions-mark-unread-moves-to-the-next-row ()
   (with-temp-buffer
     (bp/agent-sessions-mode)
     (let ((inhibit-read-only t)
@@ -1038,7 +1038,16 @@
         (should (equal "/tmp/agent-file-2"
                        (oref (magit-current-section) value)))
         (should (plist-get file :visited-at))
-        (should-not (bp/agent-sessions--next-file-ident-at-point)))
+        ;; Past a session's last file, on to the next session's row.
+        (bp/agent-sessions-mark-unread)
+        (should (equal "session-2" (oref (magit-current-section) value)))
+        ;; From a session row to its first file; the last row stays put.
+        (bp/agent-sessions-mark-unread)
+        (should (equal "/tmp/agent-file-3"
+                       (oref (magit-current-section) value)))
+        (bp/agent-sessions-mark-unread)
+        (should (equal "/tmp/agent-file-3"
+                       (oref (magit-current-section) value))))
       (should (eq (lookup-key bp/agent-sessions-mode-map (kbd "m"))
                   (lookup-key bp/agent-sessions-mode-map (kbd "u")))))))
 
