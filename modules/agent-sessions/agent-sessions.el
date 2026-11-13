@@ -4019,6 +4019,7 @@ same path under another session by magit's parent chain."
     (erase-buffer)
     (setq bp/agent-sessions--row-status nil)
     (magit-insert-section (bp/agent-sessions-root)
+      (bp/agent-mailboxes--insert-section)
       (bp/agent-locks--insert-section)
       (let ((entries (bp/agent-sessions--live-entries)))
         (setq bp/agent-sessions--worktree-column-width
@@ -4247,7 +4248,7 @@ looping behaviour everywhere else in Emacs is left alone."
 (defun bp/agent-sessions-jump ()
   "Act on the thing at point.
 On a session row, pop to its terminal.  Open a shared file or external link
-and clear its highlight.  On a worktree or repo heading, open project.el's
+and clear its highlight.  On a pending mailbox, start an agent on it.  On a worktree or repo heading, open project.el's
 dispatch menu in that directory (see `bp/agent-sessions--switch-project')."
   (interactive)
   (cond
@@ -4264,6 +4265,8 @@ dispatch menu in that directory (see `bp/agent-sessions--switch-project')."
            (if (buffer-live-p buf)
                (pop-to-buffer buf)
              (message "No session at point."))))
+        ('bp/agent-mailbox-row
+         (bp/agent-mailboxes-start (oref section value)))
         ((or 'bp/agent-session-worktree 'bp/agent-session-repo)
          (let* ((value (oref section value))
                 (dir (or (plist-get value :path) (plist-get value :root))))
@@ -6997,6 +7000,32 @@ call reading or speaking for a role it does not hold."
                     ORDER BY sent_at, rowid"
                   (list dir))))
 
+(defvar bp/agent-mailboxes--unread nil
+  "Mailboxes with unread mail, oldest first: the render path's copy.
+Plists of :dir, :count, :oldest-at and :oldest-subject.  Reloaded when mail
+is filed in or read from a mailbox and on the heartbeat, like the lock copy;
+the render path must never query the database.")
+
+(defun bp/agent-mailboxes--reload ()
+  "Re-read which mailboxes hold unread mail.  Return non-nil on a change."
+  (let ((unread
+         (mapcar
+          (pcase-lambda (`(,dir ,count ,at ,subject))
+            (list :dir dir :count count :oldest-at at :oldest-subject subject))
+          (sqlite-select
+           (bp/agent-sessions--db)
+           "SELECT m.to_key, count(*), min(m.sent_at),
+                   (SELECT o.subject FROM mail o
+                     WHERE o.to_kind = 'mailbox' AND o.to_key = m.to_key
+                       AND o.read_at IS NULL
+                     ORDER BY o.sent_at, o.rowid LIMIT 1)
+              FROM mail m
+             WHERE m.to_kind = 'mailbox' AND m.read_at IS NULL
+             GROUP BY m.to_key
+             ORDER BY min(m.sent_at)"))))
+    (prog1 (not (equal unread bp/agent-mailboxes--unread))
+      (setq bp/agent-mailboxes--unread unread))))
+
 (defun bp/agent-mailbox--check (id session mailbox consume)
   "MAILBOX's unread mail for its lock holder ID, marked read when CONSUME."
   (let ((claim (bp/agent-mailbox--claim id session mailbox)))
@@ -7004,7 +7033,9 @@ call reading or speaking for a role it does not hold."
         claim
       (let ((pending (bp/agent-mailbox--unread (car claim))))
         (when consume (bp/agent-orchestration--consume pending))
-        (when pending (bp/agent-sessions--refresh-if-visible))
+        (when pending
+          (bp/agent-mailboxes--reload)
+          (bp/agent-sessions--refresh-if-visible))
         (bp/agent-orchestration--format-messages pending)))))
 
 (defun bp/agent-mailbox--party (key terminal)
@@ -7064,6 +7095,7 @@ Only recorded: the holder collects it with its next wait."
                               (plist-get msg :from))
    (bp/agent-mailbox--of-key (plist-get msg :from-key))
    (concat "mailbox " dir))
+  (bp/agent-mailboxes--reload)
   (bp/agent-sessions--refresh-if-visible)
   (format "Sent %s to mailbox %s" (plist-get msg :type) dir))
 
@@ -7335,8 +7367,13 @@ Return non-nil when what the dashboard would show has changed."
 Reload the working copy and redraw.  Errors are swallowed: the poke is
 best-effort by design, and nothing reads its reply."
   (condition-case err
-      (when (bp/agent-locks--reload)
-        (bp/agent-sessions--refresh-if-visible))
+      ;; Both reloads run: `or' would skip the second whenever the first
+      ;; reported a change.  Mailboxes ride along because whether one has a
+      ;; listener is a lock question.
+      (let ((locks (bp/agent-locks--reload))
+            (mailboxes (bp/agent-mailboxes--reload)))
+        (when (or locks mailboxes)
+          (bp/agent-sessions--refresh-if-visible)))
     (error (message "agent-sessions: could not reload locks (%s)"
                     (error-message-string err))))
   nil)
@@ -7346,6 +7383,7 @@ best-effort by design, and nothing reads its reply."
 A poke reaches only the default server, and a holder's death announces nothing
 at all, so liveness is recomputed here too."
   (when (or bp/agent-locks--held bp/agent-locks--waiters
+            bp/agent-mailboxes--unread
             (get-buffer bp/agent-sessions-buffer-name))
     (bp/agent-locks-changed)))
 
@@ -7601,6 +7639,92 @@ nothing happens.  Return non-nil when LOCK was released."
         (message "%s changed hands since the dashboard last looked; not released."
                  name))
       (bp/agent-sessions--refresh))))
+
+;;;; Pending mailboxes
+;; Mail to a mailbox nobody listens on waits for the user, not for an agent
+;; started on its behalf: the dashboard lists it at the top, and `RET' starts
+;; an agent there.  A mailbox whose lock holder is running is left to that
+;; holder, which collects its mail with its next wait.
+
+(defun bp/agent-mailboxes--listener (dir)
+  "The lock on mailbox DIR, or nil when nobody holds it."
+  (seq-find (lambda (lock) (equal (plist-get lock :name) dir))
+            bp/agent-locks--held))
+
+(defun bp/agent-mailboxes--pending ()
+  "The mailboxes with unread mail and no running listener."
+  (seq-remove (lambda (mailbox)
+                (eq 'running
+                    (plist-get (bp/agent-mailboxes--listener
+                                (plist-get mailbox :dir))
+                               :liveness)))
+              bp/agent-mailboxes--unread))
+
+(defun bp/agent-mailboxes--insert-section ()
+  "Insert the mailboxes that have unread mail and no running listener."
+  (when-let ((pending (bp/agent-mailboxes--pending)))
+    (magit-insert-section (bp/agent-mailboxes-root)
+      (magit-insert-heading
+        (propertize "Mailboxes with mail and no running listener (RET starts an agent)\n"
+                    'font-lock-face 'magit-section-heading))
+      (dolist (mailbox pending)
+        (let* ((dir (plist-get mailbox :dir))
+               (lock (bp/agent-mailboxes--listener dir)))
+          (magit-insert-section (bp/agent-mailbox-row dir)
+            (insert
+             (propertize
+              (format "    ✉%d %s  %s: %s%s\n"
+                      (plist-get mailbox :count)
+                      (abbreviate-file-name dir)
+                      (bp/agent-locks--age (- (bp/agent-sessions--now)
+                                              (plist-get mailbox :oldest-at)))
+                      (plist-get mailbox :oldest-subject)
+                      (if lock
+                          ;; A new agent would block on this lock until the
+                          ;; user releases it.
+                          (format "  — locked by %s (%s)"
+                                  (or (plist-get lock :label)
+                                      (cadr (plist-get lock :holder)))
+                                  (if (eq (plist-get lock :liveness) 'unknown)
+                                      "liveness unknown"
+                                    "not running"))
+                        ""))
+              'font-lock-face (if lock 'bp/agent-session-error
+                                'bp/agent-session-needs-attention))))))
+      (insert "\n"))))
+
+(defun bp/agent-mailboxes-start (dir)
+  "Start an agent in mailbox DIR, told to read its `context.md'.
+The agent type is asked for; DIR is the working directory.  The agent takes
+the mailbox's lock with its first `emacs-agent wait --mailbox', which is when
+its backlog reaches it."
+  (interactive (list (read-directory-name "Mailbox: ")))
+  (let* ((dir (or (bp/agent-mailbox--path (expand-file-name dir))
+                  (user-error "No such directory: %s" dir)))
+         (types (mapcar (lambda (cell) (symbol-name (car cell)))
+                        bp/agent-orchestration-launch-commands))
+         (type (completing-read (format "Start which agent on %s? "
+                                        (abbreviate-file-name dir))
+                                types nil t nil nil (car types)))
+         (template (alist-get (intern type)
+                              bp/agent-orchestration-launch-commands))
+         (name (file-name-nondirectory (directory-file-name dir)))
+         ;; The launch templates read their prompt from a file, as a worker
+         ;; brief; this one is a single line.
+         (prompt (expand-file-name
+                  (format "%s.md" (bp/agent-orchestration--next-id "mailbox"))
+                  bp/agent-orchestration--brief-dir)))
+    (make-directory bp/agent-orchestration--brief-dir t)
+    (with-temp-file prompt (insert "read context.md"))
+    (let ((buf (bp/agent-sessions--create-terminal
+                dir (or (plist-get (bp/agent-session--repo-info dir) :worktree)
+                        name))))
+      (when (buffer-live-p buf)
+        (bp/agent-sessions--set-title-override buf (concat "mailbox " name))
+        (bp/agent-sessions--terminal-send
+         buf (bp/agent-orchestration--launch-command template prompt nil))
+        (bp/agent-sessions--refresh-if-visible))
+      buf)))
 
 (define-key bp/agent-sessions-mode-map (kbd "RET") #'bp/agent-sessions-jump)
 (define-key bp/agent-sessions-mode-map (kbd "d") #'bp/agent-sessions-show-file-diff)
