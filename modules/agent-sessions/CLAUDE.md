@@ -371,8 +371,8 @@ per-refresh work off the git path.
 ## Orchestration — an agent spawning and talking to other agents
 
 `bin/emacs-agent` lets an agent start another agent in another worktree and
-block until it reports. Its verbs are spawn, send, send-and-wait, done, ask,
-check, wait, list, and worktrees. It reaches Emacs the way `emacs-share`
+block until it reports. Its verbs are spawn, send, send-and-wait, check, wait,
+list, and worktrees. It reaches Emacs the way `emacs-share`
 does, and returns its failures as the printed value for the same reason.
 Like `emacs-share`, it identifies a Codex caller by `CODEX_THREAD_ID`, not
 `EMACS_AGENT_SESSION_ID`. Codex runs tool commands in its shared app-server
@@ -493,22 +493,26 @@ unaddressable after death.
 **Waiting polls from the shell, not from Emacs.** An emacsclient call runs on
 Emacs's only thread, so a blocking wait inside Emacs would freeze the editor for
 its whole duration — which for this feature is minutes. `emacs-agent wait` loops
-over cheap `check` calls instead.  A wait reads and consumes every message; its
-type filter only decides whether a batch ends the wait.  This distinction lets a
-coordinator see progress without stale `status' mail accumulating, while it
-continues polling until an actionable message arrives.  Emacs snapshots,
-classifies and consumes the batch in one call, avoiding the race where a
-terminal message arrives between a peek for matching types and a separate
-consume-all call.  The actionable filter includes `answer' because follow-up
-work after a worker's lifecycle `done' replies with that type.
+over cheap consuming `check` calls instead, and **any mail ends a wait**. There
+used to be a `--types` filter so a coordinator could sit through progress
+`status` mail; it was removed, along with the five-type vocabulary it filtered,
+because the cost of an early return (the agent reads a status and calls `wait`
+again) is smaller than the cost of a filter every caller has to get right.
+Each check snapshots and consumes in one Emacs call, so a message cannot arrive
+between reading and marking read.
 
-`send-and-wait' composes the existing shell-side send and poll operations.  It
-defaults to the common conversational pair — outgoing `question', incoming
-`answer' — while preserving their independent type overrides.  Because the
-send must succeed before polling begins, address routing, revival, persistence,
-timeout behavior and incremental status output remain owned by their existing
-chokepoints.  `ask' uses the same composition for its coordinator-directed
-question flow.
+**Three types, split by whether a reply is expected.** `question` expects one,
+and its `Reply:` line names the `--type answer` command; `status` (the default)
+and `answer` do not, and their `Reply:` line is marked optional. `done` and
+`blocked` went with `--types`: they differed from `status` only in steering a
+running Codex turn, so a worker's final report is a `status` whose subject says
+`Done:` or `Failed:`. Likewise the `done` and `ask` verbs, and `--files` and
+`--report`: each was a default recipient or a printed path on top of `send`.
+
+`send-and-wait' composes the existing shell-side send and poll operations,
+defaulting the outgoing type to `question'.  Because the send must succeed
+before polling begins, address routing, revival, persistence and timeout
+behavior remain owned by their existing chokepoints.
 
 **Agent mail preserves the human's terminal composer.** Codex has a native
 session queue, so its mail never touches the terminal. Claude Code does not
@@ -549,9 +553,9 @@ visual hard wrapping. Without it, a Stop or mail-arrival check can see the old
 prompt, withhold mail, and receive no further event until the human submits
 again.
 
-An hour-long turn is exactly when a question, answer, blocked report, or done
-report must not wait for `Stop'. When one of those types arrives for a running
-conversation, delivery queues all pending mail in order. For Codex it calls
+An hour-long turn is exactly when a question or answer must not wait for
+`Stop'. When one of those types arrives for a running conversation, delivery
+queues all pending mail in order. For Codex it calls
 `codex queue --thread … --message …`; for Claude it uses the TUI action sequence
 above. Codex keeps the actionable-type steering policy: a plain `status' does
 not trigger its native queue, but an earlier status rides along with later
@@ -628,6 +632,63 @@ without Enter, so an agent-session link can be copied from the dashboard and
 included in a prompt without either teaching the terminal Org syntax or
 submitting a half-finished message. The bracketed-paste implementation is shared
 with orchestration delivery; terminal-specific string handling has one owner.
+
+## Mailboxes — addressing a role rather than a conversation
+
+A role agent (a reviewer, a planner) is restarted with fresh conversations, so
+neither its terminal id nor its session id survives as an address. A
+**mailbox** is any existing directory standing for the role: `send --to DIR`
+files mail under `("mailbox" DIR)`, keyed by the directory's true name with a
+trailing slash — the spelling `emacs-lock` stores, so the two compare as
+strings. `emacs-agent` resolves the path, since only the shell knows the
+caller's directory; Emacs re-resolves and refuses a directory that does not
+exist.
+
+**Listening is holding the lock; there is no binding.** `wait --mailbox DIR`
+and `check --mailbox DIR` first run `emacs-lock acquire DIR` (a no-op for the
+holder) and exit with its refusal otherwise, so one conversation plays a role at
+a time without a second registry of who is bound where. That inherits the lock
+rules unchanged, deliberately: a holder that dies keeps the mailbox until the
+user releases it, and a fresh instance is refused meanwhile. Releasing a dead
+role's lock automatically would let two instances believe they are the role,
+which is the failure the lock exists to prevent. Emacs re-checks the lock on
+every mailbox call, because the shell's acquire is advisory to anyone calling
+`emacsclient` by hand.
+
+**Sending as a mailbox is explicit.** `send --from DIR` takes the lock the same
+way and files the mail as from `("mailbox" DIR)`, so replies land in the
+mailbox instead of with a conversation that may be gone. It is never inferred
+from the locks a sender holds: one agent may hold several directories for
+unrelated purposes. Mail read from a mailbox carries `--from DIR` in its
+`Reply:` line for the same reason. `send-and-wait` refuses `--from`: the reply
+goes to the mailbox, where the role's own watcher already waits, and two waits
+would race for it.
+
+**Delivery is pull-only, and nothing starts by itself.** Mailbox mail is never
+pasted, queued or used to revive anything; the role keeps a background
+`wait --mailbox` running. Mail to a mailbox with no running holder waits for
+the user: the dashboard lists it at the top (with its unread count, oldest
+subject, and a not-running holder's lock if one still blocks it), and `RET`
+starts an agent in DIR prompted with `read context.md`. Starting one
+automatically was considered and dropped: a burst of mail before the first
+instance took the lock would start several, and the second would sit refused
+on the lock waiting for the user anyway.
+
+**Unread mailbox mail has its own working copy.** It is not hydrated into any
+terminal's inbox — there is no fixed terminal to file it under — so
+`bp/agent-mailboxes--unread` holds per-mailbox counts for the render path,
+reloaded on mailbox send and read and alongside the lock copy on the poke and
+the heartbeat. `wait`/`check` read the `mail` table directly; they are not the
+render path.
+
+**The archive is history, not transport.** Emacs writes each message into the
+mailbox too: `DIR/mail/in/<timestamp>.md` for mail to it,
+`DIR/mail/out/<timestamp>.md` for mail sent as it, headed with sender and
+recipient (mailbox, session and terminal ids). A role reads them for its past.
+Nothing reads them back, read state stays in the `mail` table, and a failed
+write is reported without failing the send. There are no exceptions for git
+worktrees: archiving into one dirties it, which is why mailboxes belong in
+directories of their own.
 
 ## Fork/branch tracking — the one place with no ground truth
 

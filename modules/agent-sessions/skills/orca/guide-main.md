@@ -13,11 +13,13 @@ The same mail works in two relationships. Decide which one you are in first:
   telling it something changed, answering its question. Nobody dispatched
   anybody. Read *Messaging a peer* below and skip the coordinator sections.
 - **Coordinating** — you start workers, hand each a brief, and wait for their
-  `done`. Read *Messaging a peer* for the mail mechanics, then §1–§5.
+  final reports. Read *Messaging a peer* for the mail mechanics, then §1–§5.
+- **Playing a role** — you were started in a mailbox directory to be a
+  persistent role (its `context.md` says so). Read *Mailboxes* below.
 
 If the human asks you to talk to an existing session, that is peer messaging,
 even if you are asking it to do something. Do not turn it into a worker with a
-brief, and do not expect a `done` from it.
+brief, and do not expect a final report from it.
 
 ## Messaging a peer
 
@@ -30,19 +32,18 @@ emacs-agent send --to <address> --type answer --subject "<reply>" --body "..."
 ```
 
 - **Addresses.** A peer's address comes from the human (a terminal id like
-  `11588-42`, a durable session id, or an `agent-session:` link) or from the
-  `Reply:` line of mail it sent you. `emacs-agent list` shows only workers you
+  `11588-42`, a durable session id, an `agent-session:` link, or a mailbox
+  directory) or from the `Reply:` line of mail it sent you. `emacs-agent list` shows only workers you
   spawned, and `emacs-agent worktrees` shows who is where but not their ids, so
   neither finds a peer for you. If you have no address, ask the human for one
   instead of guessing. Your own id rides along on everything you send, so the
   peer can always reply.
-- **Types.** Use `question` when you need a reply, `answer` to reply to one
-  (the `Reply:` line already says so), and `status` for information the peer
-  can use whenever it next stops. `status` does not interrupt a running peer;
-  `question` and `answer` can steer it at its next safe boundary. Do not use
-  `done`, `blocked`, or `ask` — those are a worker's lifecycle reports to its
-  coordinator, and without one `done` and `ask` refuse to run unless you pass
-  `--to`.
+- **Types.** There are three. Use `question` when you need a reply, `answer`
+  to reply to one (the `Reply:` line already says so), and `status` (the
+  default) for everything else. A question's `Reply:` line names the command
+  to answer it; any other mail's says `Reply (optional):`. `status` does not
+  interrupt a running peer; `question` and `answer` can steer it at its next
+  safe boundary.
 - **Waiting.** Use `send-and-wait` only when your current response depends on
   the reply; otherwise `send` and yield. A peer's reply arrives as new input
   later, and the peer may be busy with its own task for a long time.
@@ -75,7 +76,7 @@ terminal, addressing a live one, and waiting.
 emacs-agent worktrees                     # who is working where
 emacs-agent spawn --type claude --worktree ~/dev/project_5 \
   --task "$(cat /tmp/brief.md)" --title "auth rewrite" --model opus
-emacs-agent wait --types done,blocked,question,answer --timeout 90
+emacs-agent wait --timeout 90
 emacs-agent send --to 11588-42 --type answer --subject "Use approach B" --body "..."
 emacs-agent send-and-wait --to 11588-42 --subject "Follow-up" --body "..."
 emacs-agent list                          # your workers and their live status
@@ -166,8 +167,9 @@ the brief file it wrote — that file is the record of what the worker was told,
 and re-running its command by hand reproduces the launch.
 
 The worker is launched with the protocol prepended to your task, so it already
-knows to send exactly one `done`, to use `ask` instead of any interactive prompt,
-and to stop when it is finished. You do not need to repeat that.
+knows to send you exactly one final report (a `status` whose subject starts
+`Done:` or `Failed:`), to ask with `send-and-wait` instead of any interactive
+prompt, and to stop when it is finished. You do not need to repeat that.
 
 `--type` is any agent type configured in
 `bp/agent-orchestration-launch-commands` (`claude` and `codex` out of the box —
@@ -205,16 +207,13 @@ immediately, that line is where to check the spelling.
 ## 4. Wait, and keep waiting
 
 ```bash
-emacs-agent wait --types done,blocked,question,answer --timeout 90
+emacs-agent wait --timeout 90
 ```
 
-- Reads and prints every message as it arrives. `--types` only controls which
-  message ends the wait: a `status` update is consumed and shown before polling
-  continues, while `done`, `blocked`, `question`, or `answer` returns control.
-  Keep `answer` in this stop filter because follow-up work after a worker's
-  original `done` reports its result that way.
-- On timeout it prints `messages: 0 (no matching message after 90s; call wait
-  again …)`.
+- Returns as soon as any mail is there, and prints all of it. A progress
+  `status` ends the wait too: read it, and call `wait` again if it is not what
+  you were waiting for.
+- On timeout it prints `messages: 0 (no mail after 90s; call wait again …)`.
   **That is a checkpoint, not a failure.** Real tasks run 15–60 minutes. Call
   `wait` again; use `emacs-agent list` if you want to see that a worker is still
   alive. Do not re-dispatch or kill a worker for being slow.
@@ -222,13 +221,13 @@ emacs-agent wait --types done,blocked,question,answer --timeout 90
   before the wait returns.
 - `wait` consumes everything it prints. If several workers may finish together,
   keep waiting until you have heard from each one you are expecting.
-- `emacs-agent check` reads mail without waiting. Unlike `wait`, its `--types`
-  filters which messages are read; `check --peek` leaves them unread.
+- `emacs-agent check` reads mail without waiting; `check --peek` leaves it
+  unread.
 
-Mail also reaches you when you are not waiting. Questions, answers, blocked
-reports, and done reports are queued into a running Claude or Codex conversation
-and can steer it at a safe boundary; plain status updates do not steer on their
-own. Codex uses its native session queue. Claude stashes and restores any
+Mail also reaches you when you are not waiting. Questions and answers are queued
+into a running Claude or Codex conversation and can steer it at a safe boundary;
+plain status updates, final reports included, do not steer a running Codex turn
+on their own. Codex uses its native session queue. Claude stashes and restores any
 partially written human prompt around its queue-submit action. When another
 agent type is idle, Emacs types pending `$orca (/orca)` mail into its terminal
 and submits it as new input. Read it and continue the coordination or
@@ -244,21 +243,20 @@ emacs-agent send-and-wait --to <address> --subject "<topic>" --body "<question>"
   --timeout 90
 ```
 
-It defaults to an outgoing `question` and stops on an incoming `answer`.
-`--type` overrides the outgoing message type; `--types` overrides the
-comma-separated message types that stop the wait. Status messages are still
-printed while polling continues. Delivery completes before polling starts, so
+It defaults to an outgoing `question` and, like `wait`, returns on any
+incoming mail; `--type` overrides the outgoing type. Delivery completes before
+polling starts, so
 the same durable-address routing and revival behavior as `send` applies. If the
 current response does not need the reply, use `send` alone and yield normally.
 
-A `question` from a worker is blocking — it is sitting in `emacs-agent ask` until
-you reply, so reply promptly:
+A `question` from a worker is blocking — it is sitting in `emacs-agent
+send-and-wait` until you reply, so reply promptly:
 
 ```bash
 emacs-agent send --to <worker-id> --type answer --subject "<the decision>" --body "<why, briefly>"
 ```
 
-A `blocked` message is not blocking: the worker gave up and stopped. Decide
+A `Failed:` report is not blocking: the worker gave up and stopped. Decide
 whether to respawn with a better brief, take the work yourself, or ask the human.
 
 ### Keep human decisions from getting buried
@@ -302,9 +300,47 @@ current terminal and can revive a stopped one without the caller translating
 the durable identity into an ephemeral terminal id.
 
 When everything is in, do the part only you can do: reconcile the reports, say
-what actually landed and where, and name what is still open. A worker's `done`
-summary is its own account of its work — if the result matters, verify it rather
+what actually landed and where, and name what is still open. A worker's final
+report is its own account of its work — if the result matters, verify it rather
 than repeating the claim.
+
+## Mailboxes — addressing a role, not a conversation
+
+A role agent (a reviewer, a planner, …) is restarted with fresh conversations
+from time to time, so its session id is no address for it. A **mailbox** is a
+directory standing for the role — typically holding its `context.md` and notes
+— and mail addressed to the directory waits there for whichever conversation
+currently plays the role.
+
+```bash
+emacs-agent send --to ~/agents/reviewer --subject "Review PR 123" --body "..."
+emacs-agent wait --mailbox ~/agents/reviewer --timeout 600   # as the role
+emacs-agent send --to <address> --from ~/agents/reviewer --subject "..."
+```
+
+- **Listening is holding the lock.** `wait --mailbox DIR` and `check --mailbox
+  DIR` first take DIR's `emacs-lock` (nothing happens if you already hold it),
+  and are refused while another conversation holds it. One agent plays a role
+  at a time. A holder that died keeps the lock until the human releases it from
+  the dashboard; until then a new instance is refused and should say so and
+  wait for the human.
+- **Delivery is pull-only.** Mailbox mail is never pushed into your terminal.
+  Keep a background watcher running `emacs-agent wait --mailbox DIR` (in Claude
+  Code, a background Bash command wakes you when it exits), handle what it
+  prints, and start it again.
+- **Speak as the role.** `send --from DIR` sends as the mailbox (taking its
+  lock the same way), so replies are filed in the mailbox rather than with this
+  conversation, which may be gone by then. The `Reply:` line of mail you read
+  from a mailbox already includes `--from DIR`. `send-and-wait` does not take
+  `--from`: your watcher collects the reply.
+- **No listener.** Mail to a mailbox nobody is listening on queues. The
+  dashboard lists such mailboxes at the top, and the human starts an agent
+  there (`RET`), which is launched in DIR with the prompt `read context.md`.
+- **History.** Emacs writes every message into the mailbox as well: incoming to
+  `DIR/mail/in/<timestamp>.md`, sent as the mailbox to `DIR/mail/out/`. Read
+  those for the role's past; the mail itself still arrives through `wait`.
+- **Addressing.** `--to`, `--from` and `--mailbox` take any existing directory,
+  resolved from your current directory; a path that does not exist is refused.
 
 ## What the human sees, and what they can do
 
