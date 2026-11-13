@@ -7007,11 +7007,63 @@ call reading or speaking for a role it does not hold."
         (when pending (bp/agent-sessions--refresh-if-visible))
         (bp/agent-orchestration--format-messages pending)))))
 
+(defun bp/agent-mailbox--party (key terminal)
+  "Describe durable mail KEY for an archive header, naming TERMINAL too."
+  (let ((desc (pcase key
+                (`("mailbox" ,dir) (concat "mailbox " dir))
+                (`(,kind ,value) (format "%s %s" kind value)))))
+    (if (and terminal (not (equal key (list "terminal" terminal))))
+        (format "%s (terminal %s)" desc terminal)
+      desc)))
+
+(defun bp/agent-mailbox--archive (dir direction msg from to)
+  "Write MSG into mailbox DIR's `mail/DIRECTION/' as a timestamped file.
+FROM and TO describe the sender and recipient.  History only: nothing reads
+these back, the `mail' table stays the transport and the record of what was
+read, so a failure to write is reported rather than failing the send."
+  (condition-case err
+      (let* ((folder (expand-file-name (concat "mail/" direction "/") dir))
+             (stamp (format-time-string "%Y%m%dT%H%M%S"
+                                        (plist-get msg :sent-at)))
+             (path (expand-file-name (concat stamp ".md") folder))
+             (n 1))
+        (make-directory folder t)
+        ;; Two messages in one second must not overwrite each other.
+        (while (file-exists-p path)
+          (setq n (1+ n)
+                path (expand-file-name (format "%s-%d.md" stamp n) folder)))
+        (with-temp-file path
+          (insert (format "From: %s\nTo: %s\nType: %s\nSubject: %s\nDate: %s\nMessage-Id: %s\n\n%s\n"
+                          from to (plist-get msg :type) (plist-get msg :subject)
+                          (format-time-string "%F %T %z" (plist-get msg :sent-at))
+                          (plist-get msg :id) (or (plist-get msg :body) "")))))
+    (error (message "agent-sessions: could not archive mail in %s (%s)"
+                    dir (error-message-string err)))))
+
+(defun bp/agent-mailbox--archive-sent (msg id session from-mailbox recipient)
+  "Archive MSG, sent by terminal ID in SESSION, wherever a mailbox is involved.
+FROM-MAILBOX is the mailbox it was sent as, or nil; RECIPIENT describes where
+it went.  Incoming mail goes to the recipient mailbox's `mail/in', outgoing
+mail to the sending mailbox's `mail/out'."
+  (let ((from (concat (if from-mailbox (format "mailbox %s, " from-mailbox) "")
+                      (bp/agent-mailbox--party
+                       (bp/agent-orchestration--mail-key id session) id)))
+        (to-mailbox (bp/agent-mailbox--of-key (plist-get msg :to-key))))
+    (when to-mailbox
+      (bp/agent-mailbox--archive to-mailbox "in" msg from recipient))
+    (when from-mailbox
+      (bp/agent-mailbox--archive from-mailbox "out" msg from recipient))))
+
 (defun bp/agent-mailbox--send (msg dir)
   "File MSG in mailbox DIR and return what `send' prints.
 Only recorded: the holder collects it with its next wait."
   (plist-put msg :to-key (list "mailbox" dir))
   (bp/agent-orchestration--mail-insert msg)
+  (bp/agent-mailbox--archive-sent
+   msg (plist-get msg :from) (bp/agent-sessions--session-for-id
+                              (plist-get msg :from))
+   (bp/agent-mailbox--of-key (plist-get msg :from-key))
+   (concat "mailbox " dir))
   (bp/agent-sessions--refresh-if-visible)
   (format "Sent %s to mailbox %s" (plist-get msg :type) dir))
 
@@ -7074,6 +7126,11 @@ are filed there."
                           (bp/agent-orchestration--revive-recipient
                            from-id sender recipient msg)))
                   (bp/agent-orchestration--store-message current-id msg)
+                  (when claim
+                    (bp/agent-mailbox--archive-sent
+                     msg from-id sender (car claim)
+                     (bp/agent-mailbox--party (plist-get msg :to-key)
+                                              current-id)))
                   (let ((delivery
                          (if revive-p
                              (progn
