@@ -2,17 +2,20 @@
 # Talk to other agents through the Emacs agent-sessions dashboard.
 #
 #   emacs-agent spawn --type claude|codex --worktree DIR --task TEXT [--title T] [--model M]
-#   emacs-agent send --to ADDRESS [--type TYPE] --subject S [--body B]
+#   emacs-agent send --to ADDRESS [--from DIR] [--type TYPE] --subject S [--body B]
 #   emacs-agent send-and-wait --to ADDRESS --subject S [--body B] [--type TYPE]
 #                             [--timeout SECONDS] [--interval SECONDS]
-#   emacs-agent check [--peek]
-#   emacs-agent wait [--timeout SECONDS] [--interval SECONDS]
+#   emacs-agent check [--mailbox DIR] [--peek]
+#   emacs-agent wait [--mailbox DIR] [--timeout SECONDS] [--interval SECONDS]
 #   emacs-agent list
 #   emacs-agent worktrees
 #   emacs-agent guide [--main]
 #
 # TYPE is status (the default), question (the sender waits on a reply; the
 # default for send-and-wait) or answer.  Any mail ends a wait.
+# ADDRESS is a terminal id, an agent session id, an agent-session: link, or a
+# mailbox: a directory standing for a role.  --mailbox and --from take that
+# directory's emacs-lock first, and are refused while someone else holds it.
 #
 # Every verb but `guide' is an emacsclient call into the Emacs that owns this
 # terminal, and is gated on EMACS_AGENT_SESSION_ID — the id agent-sessions.el
@@ -29,7 +32,7 @@ set -u
 selfdir=$(cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P) || selfdir=""
 
 usage() {
-  sed -n '3,16p' "$0" | sed -e 's/^# \{0,1\}//'
+  sed -n '3,19p' "$0" | sed -e 's/^# \{0,1\}//'
 }
 
 die() { echo "emacs-agent: $1" >&2; exit 1; }
@@ -82,7 +85,7 @@ verb=${1:-}
 shift 2>/dev/null || true
 case "$verb" in -h|--help|help) usage; exit 0 ;; esac
 
-type_=""; to=""; subject=""; body=""
+type_=""; to=""; subject=""; body=""; from=""; mailbox=""
 worktree=""; task=""; title=""; model=""
 timeout=90; interval=3; peek=""; main=""
 
@@ -90,6 +93,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --type) type_=${2:-}; shift 2 ;;
     --to) to=${2:-}; shift 2 ;;
+    --from) from=${2:-}; shift 2 ;;
+    --mailbox) mailbox=${2:-}; shift 2 ;;
     --subject) subject=${2:-}; shift 2 ;;
     --body) body=${2:-}; shift 2 ;;
     --worktree) worktree=${2:-}; shift 2 ;;
@@ -106,14 +111,43 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-do_send() { # do_send TO TYPE SUBJECT BODY
-  out=$(call "(bp/agent-orchestration-send \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$1")\" \"$(esc "$2")\" \"$(esc "$3")\" \"$(esc "$4")\")")
+# Is this address a mailbox directory?  The test emacs-lock uses for a path,
+# minus agent-session: links, which may contain a slash.
+is_path() {
+  case "$1" in
+    agent-session:*) return 1 ;;
+    /*|~*|.*|*/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The canonical spelling of mailbox directory DIR: physical, slash-terminated,
+# as emacs-lock stores it.  Resolved here because only this shell knows the
+# caller's working directory.
+mailbox_path() { # mailbox_path DIR
+  case "$1" in "~"|"~/"*) set -- "$HOME${1#\~}" ;; esac
+  resolved=$(cd -- "$1" 2>/dev/null && pwd -P) ||
+    die "no such mailbox directory: $1"
+  case "$resolved" in */) printf '%s' "$resolved" ;; *) printf '%s/' "$resolved" ;; esac
+}
+
+# Take mailbox DIR's lock, a no-op when this conversation already holds it.
+claim_mailbox() { # claim_mailbox DIR WHY
+  lock_out=$("$selfdir/emacs-lock" acquire "$1" --why "$2" 2>&1) || {
+    status=$?
+    printf '%s\n' "$lock_out" >&2
+    exit "$status"
+  }
+}
+
+do_send() { # do_send TO TYPE SUBJECT BODY [FROM]
+  out=$(call "(bp/agent-orchestration-send \"$(esc "$EMACS_AGENT_SESSION_ID")\" \"$(esc "$1")\" \"$(esc "$2")\" \"$(esc "$3")\" \"$(esc "$4")\" \"$(esc "${5:-}")\")")
   report "$out" 'Sent*'
 }
 
 do_check() { # do_check CONSUME -> prints "messages: N" and the messages
   consume=t; [ -n "$1" ] || consume=nil
-  call "(bp/agent-orchestration-check \"$(esc "$EMACS_AGENT_SESSION_ID")\" $consume)"
+  call "(bp/agent-orchestration-check \"$(esc "$EMACS_AGENT_SESSION_ID")\" $consume \"$(esc "$mailbox")\")"
 }
 
 count_of() { printf '%s' "$1" | sed -n '1s/^messages: \([0-9]*\)$/\1/p'; }
@@ -158,13 +192,23 @@ case "$verb" in
     need_session
     [ -n "$to" ] || die "send needs --to ADDRESS"
     [ -n "$subject" ] || die "send needs --subject"
-    do_send "$to" "$type_" "$subject" "$body"
+    ! is_path "$to" || to=$(mailbox_path "$to") || exit 1
+    if [ -n "$from" ]; then
+      from=$(mailbox_path "$from") || exit 1
+      claim_mailbox "$from" "sending as this mailbox"
+    fi
+    do_send "$to" "$type_" "$subject" "$body" "$from"
     ;;
 
   send-and-wait)
     need_session
     [ -n "$to" ] || die "send-and-wait needs --to ADDRESS"
     [ -n "$subject" ] || die "send-and-wait needs --subject"
+    # Replies to mail sent as a mailbox land in the mailbox, where its own
+    # watcher already waits; a second wait there would compete with it.
+    [ -z "$from" ] || die "send-and-wait does not take --from; use send, and let your mailbox watcher collect the reply"
+    [ -z "$mailbox" ] || die "send-and-wait does not take --mailbox"
+    ! is_path "$to" || to=$(mailbox_path "$to") || exit 1
     [ -n "$type_" ] || type_=question
     do_send "$to" "$type_" "$subject" "$body" || exit 1
     poll "$timeout" "$interval"
@@ -172,11 +216,20 @@ case "$verb" in
 
   check)
     need_session
-    if [ -n "$peek" ]; then do_check ""; else do_check consume; fi
+    if [ -n "$mailbox" ]; then
+      mailbox=$(mailbox_path "$mailbox") || exit 1
+      claim_mailbox "$mailbox" "listening on this mailbox"
+    fi
+    if [ -n "$peek" ]; then out=$(do_check ""); else out=$(do_check consume); fi
+    report "$out" 'messages:*'
     ;;
 
   wait)
     need_session
+    if [ -n "$mailbox" ]; then
+      mailbox=$(mailbox_path "$mailbox") || exit 1
+      claim_mailbox "$mailbox" "listening on this mailbox"
+    fi
     poll "$timeout" "$interval"
     ;;
 
