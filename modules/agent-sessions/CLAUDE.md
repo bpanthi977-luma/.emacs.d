@@ -1022,6 +1022,13 @@ an explicit `M-x`. Point users there rather than editing the JSON by hand.
 
 ## Editing
 
+**Replace a `bin/` script, never rewrite it in place.** Agents keep
+`emacs-agent wait` running for days, and `sh` reads a running script from disk
+by offset as it goes, so an in-place save (including an editor's or an agent's
+Edit tool) shifts the code under every running copy: they died with `syntax
+error near unexpected token 'else'`. Write the new version to a temp file in
+`bin/` and `mv` it over the original; running copies keep the old inode.
+
 **A long reply must not come back through emacsclient's stdout.** Emacs
 splits a long reply into several `-print-nonl` protocol lines, and emacsclient
 parses each `recv()` as whole lines, so a read that ends mid-line prints the
