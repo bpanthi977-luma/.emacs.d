@@ -181,14 +181,28 @@ do_check() { # do_check CONSUME -> prints "messages: N" and the messages
 
 count_of() { printf '%s' "$1" | sed -n '1s/^messages: \([0-9]*\)$/\1/p'; }
 
-# Check, consuming, until some mail arrives or TIMEOUT passes.
+# Check, consuming, until some mail arrives or TIMEOUT passes.  An Emacs that
+# cannot be reached (restarting, or refusing past call's retries) is waited
+# out like silence: a mailbox watcher runs for weeks, and one that died with
+# Emacs left its agent deaf until someone noticed.
 poll() { # poll TIMEOUT INTERVAL
   started=$(date +%s)
+  unreachable=""
   while :; do
-    out=$(do_check consume)
+    out=$(do_check consume 2>&1)
     n=$(count_of "$out")
-    [ -n "$n" ] || { printf '%s\n' "$out" >&2; return 1; }
-    [ "$n" -eq 0 ] || { printf '%s\n' "$out"; return 0; }
+    if [ -z "$n" ]; then
+      case "$out" in
+        "emacs-agent: could not reach Emacs:"*)
+          [ -n "$unreachable" ] ||
+            echo "emacs-agent: cannot reach Emacs; still waiting" >&2
+          unreachable=1 ;;
+        *) printf '%s\n' "$out" >&2; return 1 ;;
+      esac
+    else
+      unreachable=""
+      [ "$n" -eq 0 ] || { printf '%s\n' "$out"; return 0; }
+    fi
     now=$(date +%s)
     elapsed=$((now - started))
     [ "$elapsed" -lt "$1" ] || {
