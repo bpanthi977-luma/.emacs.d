@@ -659,6 +659,50 @@ reads Emacs's answer from, as named at the head of the elisp it sends.")
                                    (buffer-string))))))
       (delete-directory stub-dir t))))
 
+(ert-deftest bp/agent-cli-wait-rides-out-an-unreachable-emacs ()
+  ;; A watcher outlives Emacs restarts: unreachable is waited out like silence.
+  (let* ((stub-dir (make-temp-file "agent-unreachable-stub-" t))
+         (stub (expand-file-name "emacsclient" stub-dir))
+         (count (expand-file-name "count" stub-dir))
+         (errors (expand-file-name "stderr" stub-dir)))
+    (unwind-protect
+        (cl-flet ((run (down-for &rest args)
+                    (with-temp-file stub
+                      (insert "#!/bin/sh\n" bp/mailbox-test--stub-reply-file
+                              "n=$(cat " (shell-quote-argument count) " 2>/dev/null || echo 0)\n"
+                              "echo $((n + 1)) > " (shell-quote-argument count) "\n"
+                              (format "if [ \"$n\" -lt %d ]; then " down-for)
+                              "echo \"emacsclient: can't find socket\" >&2; exit 1; fi\n"
+                              "printf 'messages: 1\\n--- mail' > \"$reply\"\n"))
+                    (set-file-modes stub #o755)
+                    (when (file-exists-p count) (delete-file count))
+                    (let ((process-environment
+                           (cons (concat "PATH=" stub-dir ":" (getenv "PATH"))
+                                 (bp/lock-test--env
+                                  nil '("EMACS_AGENT_SESSION_ID=T-1"
+                                        "EMACS_AGENT_CONNECT_TRIES=1")))))
+                      (with-temp-buffer
+                        (list (apply #'call-process
+                                     (expand-file-name "emacs-agent"
+                                                       bp/agent-sessions--bin-dir)
+                                     nil (list t errors) nil "wait" args)
+                              (buffer-string)
+                              (with-temp-buffer
+                                (insert-file-contents errors)
+                                (buffer-string)))))))
+          ;; Down for two polls, then the mail is delivered.
+          (pcase-let ((`(,code ,out ,err)
+                       (run 2 "--timeout" "30" "--interval" "0")))
+            (should (= 0 code))
+            (should (equal "messages: 1\n--- mail\n" out))
+            (should (equal "emacs-agent: cannot reach Emacs; still waiting\n" err)))
+          ;; Down for the whole wait: it ends as a plain timeout.
+          (pcase-let ((`(,code ,out ,_)
+                       (run 1000 "--timeout" "1" "--interval" "1")))
+            (should (= 0 code))
+            (should (string-prefix-p "messages: 0 (no mail after" out))))
+      (delete-directory stub-dir t))))
+
 (defvar bp/mailbox-test--stdin nil
   "File `bp/mailbox-test--agent' feeds emacs-agent as stdin; nil for /dev/null.")
 
