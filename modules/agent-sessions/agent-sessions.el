@@ -6213,8 +6213,8 @@ of the terminal buffer."
                       (buffer-substring
                        input-start (match-beginning 0))))))))))
 
-(defun bp/agent-orchestration--claude-receptive-composer-p (session)
-  "Non-nil when SESSION's Claude composer can safely receive agent mail.
+(defun bp/agent-orchestration--claude-receptive-rendered-composer-p (session)
+  "Non-nil when SESSION's rendered Claude composer can safely receive agent mail.
 An empty composer is receptive, as is an all-faint inline completion that has
 not been accepted.  Claude also retains the last submitted text in the input
 box during redraws and sometimes after a turn; that exact text is receptive too
@@ -6233,6 +6233,83 @@ live human draft and left untouched."
                   (equal normalized-visible
                          (bp/agent-orchestration--claude-normalize-prompt
                           submitted)))))))
+
+(defun bp/agent-orchestration--ghostel-stale-p (buf)
+  "Non-nil when BUF is a ghostel terminal whose text lags its screen.
+ghostel draws a terminal into its buffer only while a window shows it; output
+to a hidden terminal stays pending until it is displayed again.  The buffer
+then holds the screen as it was last seen, or nothing at all for a terminal
+that has not been shown since it started."
+  (and (buffer-live-p buf)
+       (eq (bp/agent-sessions--buffer-terminal-type buf) 'ghostel)
+       (buffer-local-value 'ghostel--pending-redraw buf)
+       (buffer-local-value 'ghostel--term buf)
+       (fboundp 'ghostel--copy-all-text)))
+
+(defun bp/agent-orchestration--claude-boxed-composer ()
+  "The composer text of the Claude screen in the current buffer, or nil.
+Stricter than `bp/agent-orchestration--claude-composer-text', because this
+text has no faces to tell a draft from anything else: the `❯' line must sit
+directly under a separator, and only status lines may follow the box's closing
+separator.  A transcript's earlier `❯' prompt above an open dialog therefore
+does not count as the composer."
+  (save-excursion
+    (goto-char (point-max))
+    (and (re-search-backward "^─+[ \t]*\n❯[ \t\u00a0]*" nil t)
+         (let ((start (match-end 0)))
+           (goto-char start)
+           (and (re-search-forward "^─+[ \t]*$" nil t)
+                (let ((after (buffer-substring-no-properties
+                              (match-end 0) (point-max))))
+                  (and (not (string-match-p "^[─❯]" after))
+                       (<= (cl-count ?\n after) 8)
+                       (buffer-substring-no-properties
+                        start (match-beginning 0)))))))))
+
+(defun bp/agent-orchestration--claude-live-composer-text (session)
+  "SESSION's Claude composer as plain text read from its terminal, or nil."
+  (let ((screen (ghostel--copy-all-text
+                 (buffer-local-value 'ghostel--term (plist-get session :buffer)))))
+    (and (stringp screen)
+         (with-temp-buffer
+           (insert screen)
+           (bp/agent-orchestration--claude-boxed-composer)))))
+
+(defun bp/agent-orchestration--claude-composer-key (text)
+  "TEXT with all whitespace removed, for comparing renderings of one composer.
+The buffer and the terminal's own text can wrap a long line differently."
+  (replace-regexp-in-string "[[:space:]\u00a0]+" "" text))
+
+(defun bp/agent-orchestration--claude-receptive-live-composer-p (session)
+  "Non-nil when hidden ghostel SESSION's Claude composer can receive agent mail.
+The terminal's current text is plain, so it cannot show which characters are
+faint.  But the human can only type into a terminal a window shows, and showing
+it redraws the buffer.  So a human draft is still in the buffer exactly as the
+terminal holds it now.  Composer text the buffer does not show appeared while
+nobody could type: it is Claude's own (a suggestion), not a draft.  When the
+two agree, the buffer's faces decide, as for a visible terminal."
+  (let ((live (bp/agent-orchestration--claude-live-composer-text session))
+        (submitted (plist-get session :submitted-prompt)))
+    (and live
+         (let ((key (bp/agent-orchestration--claude-composer-key live))
+               (rendered (bp/agent-orchestration--claude-composer-text session)))
+           (or (string-empty-p key)
+               (and (stringp submitted)
+                    (equal key (bp/agent-orchestration--claude-composer-key
+                                submitted)))
+               (not (equal key (and rendered
+                                    (bp/agent-orchestration--claude-composer-key
+                                     rendered))))
+               (bp/agent-orchestration--claude-receptive-rendered-composer-p
+                session))))))
+
+(defun bp/agent-orchestration--claude-receptive-composer-p (session)
+  "Non-nil when SESSION's Claude composer can safely receive agent mail.
+A ghostel terminal that is hidden is judged from its current text, since its
+buffer is out of date; see `bp/agent-orchestration--ghostel-stale-p'."
+  (if (bp/agent-orchestration--ghostel-stale-p (plist-get session :buffer))
+      (bp/agent-orchestration--claude-receptive-live-composer-p session)
+    (bp/agent-orchestration--claude-receptive-rendered-composer-p session)))
 
 (defun bp/agent-orchestration--terminal-input (buf string)
   "Send raw terminal input STRING to BUF without paste handling or Enter."
