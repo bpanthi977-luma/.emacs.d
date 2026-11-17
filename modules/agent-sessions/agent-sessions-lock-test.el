@@ -403,6 +403,41 @@ name, and then succeeds."
         (delete-process proc)
         (kill-buffer buf)))))
 
+(ert-deftest bp/lock-adopt-on-session-start-does-not-trust-a-stale-copy ()
+  "A restore resumes seconds after the old terminal died; adopt anyway.
+The working copy still says `running' until the next heartbeat, which used to
+skip the adoption until the conversation's next hook event."
+  (bp/lock-test-with-db
+    (bp/lock-test--new "S" "stack")
+    (let* ((old (make-process :name "lock-old-terminal" :command '("sleep" "30")
+                              :noquery t))
+           (buf (generate-new-buffer " *lock-adopt-fresh*"))
+           (new (make-process :name "lock-new-terminal" :buffer buf
+                              :command '("sleep" "30") :noquery t))
+           (bp/agent-session-id->buffer (make-hash-table :test 'equal)))
+      (unwind-protect
+          (progn
+            (sqlite-execute (bp/agent-sessions--db)
+                            "UPDATE locks SET holder_pid = ?, holder_pid_start = ?"
+                            (list (process-id old)
+                                  (bp/agent-locks--pid-start (process-id old))))
+            (bp/agent-locks--reload)
+            (should (eq 'running (plist-get (car bp/agent-locks--held) :liveness)))
+            (delete-process old)
+            (while (bp/agent-locks--pid-start (process-id old)) (sleep-for 0.05))
+            (puthash "1-2" buf bp/agent-session-id->buffer)
+            ;; An ordinary event trusts the working copy, which is still stale.
+            (bp/agent-locks--adopt "1-2" "S")
+            (should (equal (list (list (process-id old)))
+                           (bp/lock-test--rows "SELECT holder_pid FROM locks")))
+            (bp/agent-locks--adopt "1-2" "S" t)
+            (should (equal (list (list (process-id new)))
+                           (bp/lock-test--rows "SELECT holder_pid FROM locks")))
+            (should (eq 'running (plist-get (car bp/agent-locks--held) :liveness))))
+        (when (process-live-p old) (delete-process old))
+        (delete-process new)
+        (kill-buffer buf)))))
+
 (defun bp/lock-test--cli-ok (who &rest args)
   "Run emacs-lock ARGS as WHO and return just its exit code."
   (car (apply #'bp/lock-test--run who args)))
