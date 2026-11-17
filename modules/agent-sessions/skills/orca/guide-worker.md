@@ -64,6 +64,9 @@ Rules:
   `emacs-lock release NAME` when you are done, including when you fail. If mail
   says the user released your lock, stop using the resource until you have
   waited for it again.
+- To stop a `wait` you started in the background, stop that task by its id or
+  kill the exact pid you started. Never `pkill -f "emacs-agent wait"` or kill
+  by any other pattern: it matches every agent's mailbox watcher on the machine.
 - Your final report's body is read first and often only. Lead with what changed
   and whether it works; put long detail in a file and name its path.
 - `emacs-share file FILE "why"` hands a file to the *human* in their dashboard.

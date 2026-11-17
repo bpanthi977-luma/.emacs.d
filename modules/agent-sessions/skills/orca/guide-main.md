@@ -221,6 +221,10 @@ emacs-agent wait --timeout 90
   before the wait returns.
 - `wait` consumes everything it prints. If several workers may finish together,
   keep waiting until you have heard from each one you are expecting.
+- To stop a `wait` you started in the background, stop that task by its id
+  (your harness's stop-task tool) or kill the exact pid you started. Never
+  `pkill -f "emacs-agent wait"` or kill by any other pattern: it matches every
+  agent's mailbox watcher on the machine and silently cuts them off from mail.
 - `emacs-agent check` reads mail without waiting; `check --peek` leaves it
   unread.
 
