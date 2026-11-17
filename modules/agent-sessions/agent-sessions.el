@@ -674,7 +674,8 @@ to the terminal that actually owns the event."
          session-id (equal event-name "UserPromptSubmit"))
         ;; Likewise the locks it held before a crash or `k': it believes it
         ;; still holds them, so they should read as running again.
-        (bp/agent-locks--adopt session-id agent-session-id)))
+        (bp/agent-locks--adopt session-id agent-session-id
+                               (equal event-name "SessionStart"))))
     (bp/agent-sessions--refresh-if-visible))
   nil)
 
@@ -7499,12 +7500,19 @@ at all, so liveness is recomputed here too."
             (get-buffer bp/agent-sessions-buffer-name))
     (bp/agent-locks-changed)))
 
-(defun bp/agent-locks--adopt (id agent-session-id)
+(defun bp/agent-locks--adopt (id agent-session-id &optional fresh)
   "Point AGENT-SESSION-ID's locks at terminal ID's process if they lost theirs.
 Called on every hook event, so it touches the database only when the working
 copy shows this conversation holding a lock that is not running — a session
 restored with `R', or one whose agent recorded no pid at all.  The terminal's
-process is the stand-in: it lives at least as long as the agent in it."
+process is the stand-in: it lives at least as long as the agent in it.
+
+With FRESH, check each of this conversation's locks with `ps' instead of
+trusting the working copy.  The caller passes it on `SessionStart': a restore
+resumes the conversation seconds after its old terminal was killed, while the
+working copy's liveness can be up to a heartbeat old and still say `running'.
+Trusting it there skipped the adoption, and nothing retried until the next
+hook event, often the human's next prompt."
   (when agent-session-id
     (condition-case err
         (progn
@@ -7513,7 +7521,11 @@ process is the stand-in: it lives at least as long as the agent in it."
                  (names (delq nil
                               (mapcar (lambda (lock)
                                         (and (equal (plist-get lock :holder) key)
-                                             (not (eq (plist-get lock :liveness)
+                                             (not (eq (if fresh
+                                                          (bp/agent-locks--liveness
+                                                           (plist-get lock :pid)
+                                                           (plist-get lock :pid-start))
+                                                        (plist-get lock :liveness))
                                                       'running))
                                              (plist-get lock :name)))
                                       bp/agent-locks--held)))
