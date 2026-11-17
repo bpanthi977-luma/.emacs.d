@@ -482,6 +482,97 @@
            (bp/agent-orchestration--claude-receptive-composer-p session)))
       (kill-buffer buffer))))
 
+(defun bp/agent-orchestration-test--claude-screen (composer &optional below)
+  "A Claude screen whose composer box holds COMPOSER, with BELOW after it."
+  (concat "● earlier output\n\n"
+          "────────────────\n❯ " composer "\n────────────────\n"
+          (or below "  Opus 5.5 · think:medium\n  ⏵⏵ auto mode on")))
+
+(defmacro bp/agent-orchestration-test--with-hidden-ghostel (spec &rest body)
+  "Run BODY with SPEC = (SESSION RENDERED LIVE) bound to a hidden ghostel session.
+RENDERED is the stale buffer text; LIVE is what the terminal holds now
+\(the form is evaluated on each read, so BODY may `setq' it)."
+  (declare (indent 1))
+  (let ((session (nth 0 spec)) (rendered (nth 1 spec)) (live (nth 2 spec))
+        (buffer (make-symbol "buffer")))
+    `(let* ((,buffer (generate-new-buffer " *claude-hidden-ghostel*"))
+            (,session (list :agent-type "claude" :buffer ,buffer)))
+       (unwind-protect
+           (cl-letf (((symbol-function 'bp/agent-sessions--buffer-terminal-type)
+                      (lambda (_) 'ghostel))
+                     ((symbol-function 'ghostel--copy-all-text)
+                      (lambda (_) ,live)))
+             (with-current-buffer ,buffer
+               (setq-local ghostel--term 'fake-term)
+               (setq-local ghostel--pending-redraw t)
+               (insert ,rendered))
+             ,@body)
+         (kill-buffer ,buffer)))))
+
+(ert-deftest bp/agent-orchestration-ghostel-hidden-buffer-is-stale ()
+  "Only a ghostel buffer with a pending redraw lags its terminal."
+  (bp/agent-orchestration-test--with-hidden-ghostel (session "" "")
+    (should (bp/agent-orchestration--ghostel-stale-p (plist-get session :buffer)))
+    (with-current-buffer (plist-get session :buffer)
+      (setq-local ghostel--pending-redraw nil))
+    (should-not
+     (bp/agent-orchestration--ghostel-stale-p (plist-get session :buffer)))))
+
+(ert-deftest bp/agent-orchestration-claude-hidden-ghostel-reads-the-terminal ()
+  "A hidden ghostel buffer is judged by what its terminal holds now.
+ghostel does not draw hidden terminals, so the buffer can be empty or show an
+old screen.  Mail used to wait there until the human submitted a prompt."
+  (let (live)
+    (bp/agent-orchestration-test--with-hidden-ghostel (session "" live)
+      ;; Never shown since it started: the buffer is empty.
+      (setq live (bp/agent-orchestration-test--claude-screen ""))
+      (should (bp/agent-orchestration--claude-receptive-composer-p session))
+      ;; A suggestion appeared while hidden: nobody could have typed it.
+      (setq live (bp/agent-orchestration-test--claude-screen
+                  "what's the status of all the agents?"))
+      (should (bp/agent-orchestration--claude-receptive-composer-p session))
+      ;; No composer recognized, or no text at all: wait.
+      (setq live "Claude output without a recognizable composer")
+      (should-not (bp/agent-orchestration--claude-receptive-composer-p session))
+      (setq live nil)
+      (should-not (bp/agent-orchestration--claude-receptive-composer-p session)))))
+
+(ert-deftest bp/agent-orchestration-claude-hidden-ghostel-keeps-drafts ()
+  "A draft typed before the terminal was hidden is still in the buffer; keep it."
+  (let ((live (bp/agent-orchestration-test--claude-screen
+               "a long human draft that the terminal wraps differently")))
+    (bp/agent-orchestration-test--with-hidden-ghostel
+        (session (bp/agent-orchestration-test--claude-screen
+                  "a long human draft that\n  the terminal wraps differently")
+                 live)
+      (should-not (bp/agent-orchestration--claude-receptive-composer-p session))
+      ;; Once submitted it is no longer a draft.
+      (setq session (plist-put session :submitted-prompt
+                               "a long human draft that the terminal wraps differently"))
+      (should (bp/agent-orchestration--claude-receptive-composer-p session)))))
+
+(ert-deftest bp/agent-orchestration-claude-hidden-ghostel-faint-suggestion ()
+  "A suggestion shown faint when last seen is still a suggestion while hidden."
+  (bp/agent-orchestration-test--with-hidden-ghostel
+      (session "" (bp/agent-orchestration-test--claude-screen "open the PR"))
+    (with-current-buffer (plist-get session :buffer)
+      (insert "────────────────\n❯ ")
+      (let ((start (point)))
+        (insert "open the PR")
+        (add-text-properties
+         start (point) '(font-lock-face (:inherit (eat-term-faint)))))
+      (insert "\n────────────────\n  Opus"))
+    (should (bp/agent-orchestration--claude-receptive-composer-p session))))
+
+(ert-deftest bp/agent-orchestration-claude-hidden-ghostel-ignores-dialogs ()
+  "A dialog below the transcript's last prompt is not a composer."
+  (bp/agent-orchestration-test--with-hidden-ghostel
+      (session ""
+               (concat "❯ fix the bug\n\n● Running a command\n"
+                       "────────────────\n Bash command\n   ls\n"
+                       " Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"))
+    (should-not (bp/agent-orchestration--claude-receptive-composer-p session))))
+
 (ert-deftest bp/agent-orchestration-claude-queue-only-pastes-and-submits ()
   (let* ((buffer (generate-new-buffer " *claude-queue-test*"))
          (session (list :agent-type "claude" :buffer buffer))
