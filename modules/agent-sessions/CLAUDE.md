@@ -547,6 +547,23 @@ screen until the human acts, and an idle Claude fires no hook to retry
 delivery, so without the check mail to an idle Claude waited for the human.
 If ghostel changes its blend, the check fails safe: suggestions read as drafts.
 
+ghostel only draws a terminal into its buffer while a window shows it
+(`ghostel--pending-redraw` stays set while it is hidden), so a hidden Claude's
+buffer shows an old screen, or nothing if it has not been shown since it
+started. Judged from that, mail waited for the human's next prompt, even after
+they looked at the terminal and saw only a suggestion. A hidden ghostel
+terminal is therefore judged from its current text (`ghostel--copy-all-text`),
+which is plain: no faces to tell a suggestion from a draft. The rule that
+replaces them: the human can only type into a terminal a window shows, and
+showing it redraws the buffer, so a draft is still in the buffer exactly as
+the terminal holds it. Composer text the buffer doesn't show appeared while
+nobody could type, so it is Claude's. When the two agree, the buffer's faces
+decide as before. They are compared without whitespace, since the two can
+wrap a long line differently. Because plain text can't tell a draft from
+anything else, the composer is recognized more strictly there: `❯` directly
+under a separator, and only status lines after the box. That way the
+transcript's last prompt above an open dialog is not taken for the composer.
+
 Claude does not always clear submitted text from the rendered composer before
 the hook callback tries delivery; it can retain that text through the turn or
 until the next edit. `UserPromptSubmit` includes the authoritative
